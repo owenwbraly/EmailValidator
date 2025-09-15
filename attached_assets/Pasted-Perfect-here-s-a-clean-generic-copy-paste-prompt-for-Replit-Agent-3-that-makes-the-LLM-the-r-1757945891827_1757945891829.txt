@@ -1,0 +1,259 @@
+Perfect—here’s a **clean, generic, copy-paste prompt** for Replit Agent 3 that makes the **LLM the required core engine** and adds **comprehensive deterministic checks + de-duplication + removal**. It’s non-personal, browser-only, and does not rely on any images.
+
+---
+
+# Build a Browser App: “Email Validator • Cleaner • Deduper (LLM-First)”
+
+## Objective
+
+Create a single-page web app that:
+
+1. **Loads** large `.csv`/`.xlsx` files (multi-sheet supported).
+2. **Analyzes every email via an LLM (mandatory)**, augmented by deterministic checks.
+3. **Repairs** obvious issues when safe, **removes** bad emails from the main dataset, and **de-duplicates** records.
+4. **Exports**:
+
+   * **Cleaned dataset** (bad/duplicate rows removed; repaired emails applied).
+   * **Rejected dataset** (all removed rows + reasons).
+   * **Changes report** (row index, original → new, reasons, confidence).
+   * **Duplicates report** (duplicate groups & the kept canonical).
+
+No command line. Entirely browser-based with a simple UI. If no LLM key is provided, **do not run**; show a friendly blocking message.
+
+---
+
+## What “bad email” means (strict categories)
+
+Mark a row for **removal** from the main dataset if any of the following is true (LLM + rules agree or LLM high-confidence):
+
+* **Invalid syntax**: multiple `@`, empty local/domain, spaces, leading/trailing dots, consecutive dots that cannot be safely corrected.
+* **Invalid/implausible domain**: illegal label characters, label length > 63, TLD not in whitelist, homograph tricks that cannot be normalized safely.
+* **Disposable domain** (from curated list).
+* **System/role account** (policy-based, e.g., `noreply@`, `admin@`, `sales@`), if the toggle “Exclude role accounts” is ON (default ON).
+* **LLM low-plausibility**: action=`suppress` or `review` with confidence < threshold after deterministic flags indicate risk.
+* **Near-duplicate garbage**: LLM marks as junk/seed/trap (e.g., `test@test.com`, `asdf@asdf.com`) at high confidence.
+
+**Repairs** (write back to main dataset) only when **unambiguous** (LLM `fix_auto` and confidence ≥ threshold):
+
+* Obvious TLD typos (`.con → .com`, etc.).
+* Common domain typos (`gmial.com → gmail.com`, etc.).
+* Trimmable artifacts (angle brackets, smart quotes, zero-width, fullwidth `＠`).
+* Single dot collapse in local part if clearly intended (`john..doe → john.doe`).
+
+**De-duplication**:
+
+* Build a **canonical key** per email: punycode domain, domain lowercased, provider-aware plus-tag handling (e.g., Gmail ignores dots and `+tag`), and Unicode confusables normalized.
+* Exact duplicates (same canonical key): keep the first occurrence (or most complete row if a “prefer non-empty fields” rule is enabled), move others to **Duplicates report** and remove from main dataset.
+* **Near-duplicates**: if edit distance ≤ 2 on domain or local and LLM says they refer to the same address with high confidence, merge as duplicates (do **not** auto-repair unless also `fix_auto`).
+
+---
+
+## UX (non-technical)
+
+* **Header**: “Email Validator • Cleaner • Deduper (LLM-First)”
+* **Upload**: drag-and-drop or file picker (CSV/XLSX).
+* **LLM Settings** (required): provider select, model name, API key field (stored session-local only).
+* **Options**:
+
+  * Confidence threshold (0.50–0.99; default **0.85**).
+  * Exclude role accounts (default ON).
+  * Provider-aware de-dup (default ON; Gmail dot/plus semantics).
+  * Export reports (Rejected, Changes, Duplicates) (default ON).
+* **Process** button with a clear progress bar and counters: Accepted / Fixed / Removed / Duplicates.
+* **Downloads**: Cleaned dataset, Rejected dataset, Changes report, Duplicates report.
+* **Footnote**: “Validates plausibility; does not perform SMTP deliverability checks.”
+
+---
+
+## Pipeline (authoritative)
+
+1. **Load & detect Email column(s)** per sheet
+
+   * Case-insensitive match on headers: `email`, `email address`, `e-mail`, `work email`, `business email`.
+   * Sheets without an Email column pass through unchanged (to the cleaned file).
+
+2. **Deterministic feature extraction (offline)**
+
+   * **Normalization** (pre-LLM): trim, remove zero-width, replace smart quotes, strip angle brackets, replace fullwidth `＠`, remove internal spaces, lowercase **domain only**, strip trailing dot, collapse `..` in domain (never introduce invalid forms).
+   * **Syntax checks**: one `@`; RFC-safe character classes; no leading/trailing dots; local/domain not empty; label length constraints.
+   * **IDN**: convert domain to punycode with `idna`; flag `non_ascii_domain`.
+   * **Confusables**: flag suspicious homoglyphs in domain (latin look-alikes).
+   * **Lists**: `role_account`, `free_mail_domain`, `disposable_domain`, `bad_tld`.
+   * **Heuristics**: TLD/domain typo maps; known big domains list for fuzzy correction suggestions.
+   * Output **booleans & tags** per row (no PII beyond email).
+
+3. **LLM classification (mandatory for every row)**
+
+   * Send **only** the email string plus the deterministic flags.
+   * **System prompt (must use)**:
+     “You validate email plausibility. Do not claim deliverability or use the network. Consider provided flags (syntax errors, TLD/domain risks, role/disposable, IDN, confusables).
+     Return only the JSON contract. If a safe, obvious repair exists, propose exactly one `suggested_fix`. Otherwise prefer `review`/`suppress` over guessing.”
+   * **JSON contract (must enforce)**:
+
+     ```json
+     {
+       "input_email": "",
+       "normalized_email": "",
+       "action": "accept|fix_auto|review|suppress",
+       "confidence": 0.0,
+       "risk_reasons": [],
+       "suggested_fix": null,
+       "notes": ""
+     }
+     ```
+
+4. **Decision & remediation**
+
+   * **Fix**: if `action=fix_auto` and `confidence ≥ threshold`, write `suggested_fix` (or `normalized_email`).
+   * **Accept**: if `action=accept`, keep normalized form.
+   * **Remove**: if `action=suppress`, or `review` with low confidence and risky flags (invalid syntax, bad TLD, disposable, dangerous confusables), move row to **Rejected dataset**.
+   * Always log a **Changes report** entry when a cell is modified or a row is removed.
+
+5. **De-duplication stage**
+
+   * Compute **canonical key**:
+
+     * domain: punycode→lowercase;
+     * local: lowercase for common case-insensitive providers; remove dots & `+tag` for Gmail-like if “provider-aware” is ON;
+     * strip zero-width and confusables.
+   * Group by canonical key; keep the first (or “most complete” if that rule is enabled), move others to **Duplicates report** and drop them from the cleaned dataset.
+   * Optionally flag **near-duplicates** (edit distance ≤ 2) to aid manual review in the Duplicates report.
+
+6. **Write outputs**
+
+   * **Cleaned dataset** (same format as input; only rows with bad emails or duplicates removed; repaired emails applied).
+   * **Rejected dataset** (removed rows + `reason`, `confidence`, `sheet`, `row_index`).
+   * **Changes report** (repairs + removals).
+   * **Duplicates report** (canonical → members, chosen keeper).
+   * Preserve sheet names and non-Email columns exactly for rows that remain.
+
+---
+
+## Implementation details
+
+* **Language:** Python 3.11+
+* **UI:** Streamlit single-page app (simple, accessible).
+* **Core libs:** `pandas`, `openpyxl`, `idna`, `rapidfuzz`, `tld`, `email-validator` (for robust syntax checks), `python-dotenv`.
+* **LLM client:** Provider-agnostic adapter (OpenAI/Anthropic). Enforce **JSON-only** responses with schema validation and retry/backoff. If key missing → block with message.
+* **Data volume:** Support ≥100k rows total.
+
+  * CSV: `read_csv(..., chunksize=20_000)`; process & append.
+  * XLSX: iterate sheets; stream rows where feasible.
+* **Performance:** Batch LLM calls with concurrency + rate-limit handling; show progress per 1k rows.
+* **Privacy:** Never send anything except the email string and deterministic flags to the LLM.
+
+---
+
+## Configuration
+
+* **UI fields**: provider, model name, API key, confidence threshold, exclude role accounts (ON), provider-aware de-dup (ON), export reports (ON).
+* **Config files**:
+
+  * `config/typo_maps.json` (TLD/domain corrections)
+  * `config/disposable_domains.txt`
+  * `config/role_locals.txt`
+  * `config/top_domains.txt` (for fuzzy correction reference)
+
+---
+
+## Files to create
+
+```
+app/
+  __init__.py
+  ui.py                 # Streamlit app
+  pipeline.py           # orchestrates the 6 pipeline steps
+  io_utils.py           # load/save, chunking, sheet preservation
+  detect.py             # email column detection
+  features.py           # deterministic flags + canonical key
+  normalize.py          # normalization & corrections
+  dedupe.py             # canonical/near-duplicate logic
+  routing.py            # fix/accept/remove decisions
+  llm_adapter.py        # JSON-mode calls + retries + schema enforcement
+config/
+  typo_maps.json
+  disposable_domains.txt
+  role_locals.txt
+  top_domains.txt
+README.md
+requirements.txt
+```
+
+---
+
+## Critical algorithms & rules (implement precisely)
+
+**1) Normalization (pre-LLM)**
+
+* Remove: `\u200b\u200c\u200d\u2060`, surrounding `< >`, internal whitespace.
+* Replace smart quotes; convert fullwidth `＠` → `@`.
+* Lowercase **domain only**; strip trailing dot.
+* Collapse consecutive dots in domain; in local, collapse only if doing so yields a valid local (no leading/trailing dot).
+
+**2) TLD & domain validation**
+
+* TLD whitelist via `tld` (public suffix). Unknown TLD → risky.
+* Domain labels: ASCII or `xn--` punycode; 1–63 chars; no leading/trailing hyphen; allowed char class `[A-Za-z0-9-]`.
+* Homoglyph screen: flag if domain contains suspicious mixed scripts or commonly abused confusables.
+
+**3) Correction heuristics**
+
+* Domain typo map (exact matches): `gmial.com→gmail.com`, `outlok.com→outlook.com`, etc.
+* TLD typo map: `.con→.com`, `.cmo→.com`, `.c0m→.com`, `.cim→.com`.
+* For near-misses, use `rapidfuzz` against `top_domains.txt`; propose the closest domain if distance ≥ 90/100 and length difference ≤ 2.
+
+**4) Canonical key (for de-dup)**
+
+* Domain: punycode → lowercase.
+* Local: lowercase for common providers; for Gmail-like providers, remove dots and strip `+tag`.
+* Remove zero-width and confusables from the local part when building the key (do not alter display email unless repaired).
+
+**5) Decision policy (authoritative)**
+
+```python
+def decide(row, llm_json, threshold):
+    act = llm_json.get("action")
+    conf = float(llm_json.get("confidence", 0))
+    risky = any(flag in row.flags for flag in ["invalid_syntax","bad_tld","disposable_domain","unicode_confusable"])
+    if act == "fix_auto" and conf >= threshold:
+        return ("fix", llm_json.get("suggested_fix") or llm_json.get("normalized_email"), conf)
+    if act == "accept":
+        return ("accept", llm_json.get("normalized_email") or row.email, conf)
+    # remove if suppress OR (review+low confidence+risky)
+    if act == "suppress" or (act == "review" and conf < threshold and risky):
+        return ("remove", None, conf)
+    return ("accept", row.email, conf)  # conservative default
+```
+
+---
+
+## LLM call contract (must enforce)
+
+* **Request**: system prompt (above), single **email** string, deterministic **flags** object.
+* **Response**: must parse to the exact JSON schema; reject/retry on deviations; cap `notes` length to 120 chars.
+
+---
+
+## Acceptance tests
+
+1. **LLM required**: without a key, the app blocks processing with a clear message.
+2. **Repairs applied**: `.con → .com`, `gmial → gmail` with high confidence.
+3. **Removals**: invalid syntax or disposable domains are removed to Rejected.
+4. **Role accounts**: excluded when toggle ON; retained when OFF.
+5. **De-dup**: exact duplicates removed; Gmail dot/plus canonicalization merges variants; Duplicates report lists all.
+6. **Near-duplicates**: `john@faceboook.com` and `john@facebook.com` grouped as near-dups; repaired if high-confidence `fix_auto`.
+7. **Large file**: ≥100k rows processed with visible progress; memory stable.
+8. **Outputs**: four files download correctly and match the policy (cleaned, rejected, changes, duplicates).
+9. **No schema drift**: for retained rows, all non-Email fields remain byte-identical.
+
+---
+
+## Copy for the UI
+
+* Subtitle: “LLM-powered validation and cleaning for big spreadsheets.”
+* Key notice: “This tool validates plausibility and hygiene. It does **not** guarantee SMTP deliverability.”
+* Success toast: “Done. Cleaned dataset and reports are ready.”
+
+---
+
+**Build exactly as specified.** The LLM is the core decision engine for **every** row; deterministic checks provide signals, not an alternative path. The main export **excludes** bad emails and duplicates; all removed content is preserved in separate reports for audit.
