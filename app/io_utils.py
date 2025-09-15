@@ -30,22 +30,28 @@ class FileHandler:
     def _load_csv(self, uploaded_file) -> Dict[str, pd.DataFrame]:
         """Load CSV file with chunked reading for large files"""
         try:
-            # Reset file pointer
+            # Convert uploaded file to BytesIO for pandas compatibility
             uploaded_file.seek(0)
+            file_content = uploaded_file.getvalue()
             
-            # Try to detect file size and use chunked reading for large files
-            file_size = len(uploaded_file.getvalue())
+            # Convert bytes to StringIO for CSV reading
+            if isinstance(file_content, bytes):
+                file_content = file_content.decode('utf-8')
+            
+            csv_buffer = io.StringIO(file_content)
+            file_size = len(file_content)
             
             if file_size > 10 * 1024 * 1024:  # 10MB threshold
                 # Use chunked reading
                 chunks = []
-                for chunk in pd.read_csv(uploaded_file, chunksize=self.chunk_size):
+                csv_buffer.seek(0)
+                for chunk in pd.read_csv(csv_buffer, chunksize=self.chunk_size):
                     chunks.append(chunk)
                 df = pd.concat(chunks, ignore_index=True)
             else:
                 # Read entire file
-                uploaded_file.seek(0)
-                df = pd.read_csv(uploaded_file)
+                csv_buffer.seek(0)
+                df = pd.read_csv(csv_buffer)
             
             return {'main': df}
             
@@ -55,11 +61,14 @@ class FileHandler:
     def _load_excel(self, uploaded_file) -> Dict[str, pd.DataFrame]:
         """Load Excel file with all sheets"""
         try:
-            # Reset file pointer
+            # Convert uploaded file to BytesIO for pandas compatibility
             uploaded_file.seek(0)
+            file_content = uploaded_file.getvalue()
+            
+            excel_buffer = io.BytesIO(file_content)
             
             # Read all sheets
-            sheets_dict = pd.read_excel(uploaded_file, sheet_name=None, engine='openpyxl')
+            sheets_dict = pd.read_excel(excel_buffer, sheet_name=None, engine='openpyxl')
             
             return sheets_dict
             
