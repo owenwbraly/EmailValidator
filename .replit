@@ -1,0 +1,47 @@
+modules = ["python-3.11"]
+[agent]
+integrations = ["python_openai:1.0.0", "python_anthropic:1.0.0"]
+
+[nix]
+channel = "stable-25_05"
+packages = ["glibcLocales", "rapidfuzz-cpp", "taskflow"]
+
+[deployment]
+deploymentTarget = "autoscale"
+run = ["streamlit", "run", "app.py", "--server.port", "5000"]
+
+[workflows]
+runButton = "Project"
+
+[[workflows.workflow]]
+name = "Project"
+mode = "parallel"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Email Validator App"
+
+[[workflows.workflow]]
+name = "Email Validator App"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "streamlit run app.py --server.port 5000"
+waitForPort = 5000
+
+[workflows.workflow.metadata]
+outputType = "webview"
+
+[[ports]]
+localPort = 5000
+externalPort = 80
+
+[[ports]]
+localPort = 37613
+externalPort = 3001
+
+[[ports]]
+localPort = 38995
+externalPort = 3000
