@@ -1,0 +1,22 @@
+[
+  {
+    "name": "John Smith",
+    "email": "john@gmail.com",
+    "company": "TechCorp"
+  },
+  {
+    "name": "Jane Doe", 
+    "email": "jane@gmial.com",
+    "company": "DataInc"
+  },
+  {
+    "name": "Admin User",
+    "email": "admin@company.com", 
+    "company": "StartupCo"
+  },
+  {
+    "name": "Bob Test",
+    "email": "bob@guerrillamail.com",
+    "company": "TempCorp"
+  }
+]

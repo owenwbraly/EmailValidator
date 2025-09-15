@@ -62,9 +62,9 @@ class EmailValidatorUI:
         st.subheader("📁 Upload Data File")
         
         uploaded_file = st.file_uploader(
-            "Choose a CSV or Excel file",
-            type=['csv', 'xlsx', 'xls'],
-            help="Supports CSV and Excel files with multiple sheets. The tool will automatically detect email columns."
+            "Choose a data file",
+            type=['csv', 'xlsx', 'xls', 'json', 'tsv'],
+            help="Supports CSV, Excel, JSON, and TSV files. The tool will automatically detect email columns."
         )
         
         if uploaded_file:
@@ -79,26 +79,174 @@ class EmailValidatorUI:
         return uploaded_file
     
     def _show_file_preview(self, uploaded_file):
-        """Show a preview of the uploaded file structure"""
+        """Show enhanced preview with email column detection"""
         try:
-            if uploaded_file.name.endswith('.csv'):
-                df_preview = pd.read_csv(uploaded_file, nrows=5)
-                st.write("**CSV Preview (first 5 rows):**")
-                st.dataframe(df_preview)
-            else:
-                # Excel file - show sheet info
-                sheets = pd.read_excel(uploaded_file, sheet_name=None, nrows=0)
-                st.write("**Excel Sheets:**")
-                for sheet_name, df in sheets.items():
-                    st.write(f"- **{sheet_name}**: {len(df.columns)} columns")
+            from .detect import EmailColumnDetector
+            from .io_utils import FileHandler
+            
+            # Load file data
+            file_handler = FileHandler()
+            file_data = file_handler.load_file(uploaded_file)
+            detector = EmailColumnDetector()
+            
+            # Detect email columns across all sheets
+            email_columns_found = {}
+            for sheet_name, df in file_data.items():
+                email_col = detector.detect_email_column(df)
+                if email_col:
+                    email_columns_found[sheet_name] = email_col
+            
+            # Display summary
+            if email_columns_found:
+                st.success(f"📧 **Email columns detected:** {len(email_columns_found)} sheet(s) with email data")
                 
-                # Show preview of first sheet
-                first_sheet = list(sheets.keys())[0]
-                df_preview = pd.read_excel(uploaded_file, sheet_name=first_sheet, nrows=5)
-                st.write(f"**Preview of '{first_sheet}' (first 5 rows):**")
-                st.dataframe(df_preview)
+                for sheet_name, email_col in email_columns_found.items():
+                    st.write(f"**{sheet_name}**: Email column '**{email_col}**' found")
+                    
+                    # Show sample emails from this sheet
+                    df = file_data[sheet_name]
+                    sample_emails = df[email_col].dropna().head(3).tolist()
+                    if sample_emails:
+                        st.write(f"  Sample emails: {', '.join(str(e) for e in sample_emails)}")
+            else:
+                st.warning("⚠️ **No email columns detected** - Please check your file has email data with proper headers")
+            
+            # Show sheet/file structure
+            st.write("**📋 File Structure:**")
+            
+            if uploaded_file.name.endswith('.csv'):
+                df = file_data['main']
+                col1, col2, col3 = st.columns(3)
+                col1.metric("Rows", len(df))
+                col2.metric("Columns", len(df.columns))
+                col3.metric("Email Column", "✅" if 'main' in email_columns_found else "❌")
+                
+                st.write("**Column Headers:**")
+                email_col = email_columns_found.get('main')
+                st.write(", ".join(f"**{col}**" if col == email_col else col for col in df.columns))
+                
+                # Preview data
+                st.write("**First 5 rows:**")
+                st.dataframe(df.head())
+                
+            else:
+                # Multi-sheet file (Excel/JSON with multiple sections)
+                total_rows = sum(len(df) for df in file_data.values())
+                sheets_with_emails = len(email_columns_found)
+                
+                col1, col2, col3 = st.columns(3)
+                col1.metric("Total Sheets", len(file_data))
+                col2.metric("Total Rows", total_rows)
+                col3.metric("Sheets with Emails", sheets_with_emails)
+                
+                # Show each sheet
+                for sheet_name, df in file_data.items():
+                    has_email = sheet_name in email_columns_found
+                    email_icon = "📧" if has_email else "📄"
+                    
+                    with st.expander(f"{email_icon} **{sheet_name}** ({len(df)} rows, {len(df.columns)} columns)"):
+                        if has_email:
+                            st.success(f"Email column: **{email_columns_found[sheet_name]}**")
+                            
+                            # Show sample emails
+                            email_col = email_columns_found[sheet_name]
+                            sample_emails = df[email_col].dropna().head(3).tolist()
+                            if sample_emails:
+                                st.write("Sample emails:", ", ".join(str(e) for e in sample_emails))
+                        else:
+                            st.info("No email column detected - this sheet will pass through unchanged")
+                        
+                        st.write("**Columns:**", ", ".join(df.columns))
+                        st.dataframe(df.head())
+            
         except Exception as e:
-            st.warning(f"Could not preview file: {str(e)}")
+            st.error(f"Could not analyze file: {str(e)}")
+            import traceback
+            st.code(traceback.format_exc())
+    
+    def _render_validation_charts(self, summary: Dict[str, int], total_processed: int):
+        """Render validation statistics with charts"""
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # Pie chart of email processing results
+            import plotly.express as px
+            
+            data = {
+                'Status': ['Accepted', 'Fixed', 'Removed', 'Duplicates'],
+                'Count': [
+                    summary.get('accepted', 0),
+                    summary.get('fixed', 0), 
+                    summary.get('removed', 0),
+                    summary.get('duplicates', 0)
+                ],
+                'Color': ['#28a745', '#ffc107', '#dc3545', '#17a2b8']
+            }
+            
+            # Filter out zero counts
+            filtered_data = {k: [v for i, v in enumerate(vs) if data['Count'][i] > 0] for k, vs in data.items()}
+            
+            if filtered_data['Count']:
+                fig = px.pie(
+                    values=filtered_data['Count'],
+                    names=filtered_data['Status'],
+                    title="Email Processing Results",
+                    color_discrete_sequence=filtered_data['Color']
+                )
+                fig.update_traces(textposition='inside', textinfo='percent+label')
+                st.plotly_chart(fig, use_container_width=True)
+            
+        with col2:
+            # Bar chart of processing efficiency
+            efficiency_data = {
+                'Metric': ['Success Rate', 'Fix Rate', 'Removal Rate', 'Duplicate Rate'],
+                'Percentage': [
+                    (summary.get('accepted', 0) + summary.get('fixed', 0)) / total_processed * 100 if total_processed > 0 else 0,
+                    summary.get('fixed', 0) / total_processed * 100 if total_processed > 0 else 0,
+                    summary.get('removed', 0) / total_processed * 100 if total_processed > 0 else 0,
+                    summary.get('duplicates', 0) / total_processed * 100 if total_processed > 0 else 0
+                ]
+            }
+            
+            fig_bar = px.bar(
+                x=efficiency_data['Metric'],
+                y=efficiency_data['Percentage'],
+                title="Processing Efficiency Rates",
+                color=efficiency_data['Percentage'],
+                color_continuous_scale='RdYlGn'
+            )
+            fig_bar.update_layout(showlegend=False)
+            fig_bar.update_yaxes(title_text='Percentage (%)')
+            st.plotly_chart(fig_bar, use_container_width=True)
+        
+        # Detailed analysis
+        col3, col4 = st.columns(2)
+        
+        with col3:
+            st.write("**📋 Processing Analysis:**")
+            quality_score = (summary.get('accepted', 0) + summary.get('fixed', 0)) / total_processed * 100 if total_processed > 0 else 0
+            
+            if quality_score >= 80:
+                st.success(f"🎉 **Excellent quality!** {quality_score:.1f}% of emails were valid or successfully fixed")
+            elif quality_score >= 60:
+                st.warning(f"⚠️ **Good quality** with room for improvement. {quality_score:.1f}% success rate")
+            else:
+                st.error(f"🚨 **Quality concerns** detected. Only {quality_score:.1f}% success rate")
+        
+        with col4:
+            # Report summaries
+            changes_count = len(self.results.get('changes_report', []))
+            rejected_count = len(self.results.get('rejected_data', []))
+            
+            st.write("**📈 Key Insights:**")
+            if summary.get('fixed', 0) > 0:
+                st.write(f"• Fixed {summary.get('fixed', 0)} typos and formatting issues")
+            if summary.get('duplicates', 0) > 0:
+                st.write(f"• Removed {summary.get('duplicates', 0)} duplicate entries")
+            if rejected_count > 0:
+                st.write(f"• Filtered out {rejected_count} invalid/risky emails")
+            if changes_count > 0:
+                st.write(f"• Made {changes_count} total modifications")
     
     def _render_llm_settings(self) -> Dict[str, Any]:
         """Render LLM configuration section"""
@@ -227,20 +375,27 @@ class EmailValidatorUI:
             st.exception(e)
     
     def _render_results_section(self):
-        """Render results and download section"""
+        """Render results and download section with enhanced analytics"""
         if not self.results:
             return
         
         st.subheader("📊 Results Summary")
         
-        # Summary metrics
+        # Summary metrics  
         summary = self.results.get('summary', {})
+        total_processed = summary.get('accepted', 0) + summary.get('fixed', 0) + summary.get('removed', 0) + summary.get('duplicates', 0)
+        
         col1, col2, col3, col4 = st.columns(4)
         
         col1.metric("✅ Accepted", summary.get('accepted', 0))
         col2.metric("🔧 Fixed", summary.get('fixed', 0))
         col3.metric("❌ Removed", summary.get('removed', 0))
         col4.metric("🔄 Duplicates", summary.get('duplicates', 0))
+        
+        # Add validation statistics with charts
+        if total_processed > 0:
+            st.subheader("📈 Validation Statistics")
+            self._render_validation_charts(summary, total_processed)
         
         # Download section
         st.subheader("📥 Download Results")
