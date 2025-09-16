@@ -17,13 +17,25 @@ from .llm_adapter import LLMAdapter
 class EmailValidatorUI:
     def __init__(self):
         self.pipeline = None
-        self.results = None
+        # Initialize session state for persistent results
+        if 'processing_results' not in st.session_state:
+            st.session_state.processing_results = None
+        if 'processing_options' not in st.session_state:
+            st.session_state.processing_options = None
         
     def run(self):
         """Main UI rendering method"""
         # Header
         st.title("📧 Email Validator • Cleaner • Deduper (Deterministic-First)")
         st.markdown("**Deterministic validation with optional AI assistance for big spreadsheets.**")
+        
+        # Add clear session button if results exist
+        if st.session_state.processing_results:
+            with st.sidebar:
+                if st.button("🔄 Clear Results & Start New"):
+                    st.session_state.processing_results = None
+                    st.session_state.processing_options = None
+                    st.rerun()
         
         # Important notice
         st.info("🔍 This tool validates plausibility and hygiene. It does **not** guarantee SMTP deliverability.")
@@ -49,7 +61,7 @@ class EmailValidatorUI:
                 self._process_file(uploaded_file, llm_config, options)
         
         # Results and download section
-        if self.results:
+        if st.session_state.processing_results:
             self._render_results_section()
     
     def _has_api_keys(self) -> bool:
@@ -257,9 +269,12 @@ class EmailValidatorUI:
                 st.error(f"🚨 **Quality concerns** detected. Only {quality_score:.1f}% success rate")
         
         with col4:
-            # Report summaries
-            changes_count = len(self.results.get('changes_report', []))
-            rejected_count = len(self.results.get('rejected_data', []))
+            # Report summaries - use session state for persistence
+            results = st.session_state.processing_results
+            changes_report = results.get('changes_report', pd.DataFrame()) if results else pd.DataFrame()
+            rejected_data = results.get('rejected_data', pd.DataFrame()) if results else pd.DataFrame()
+            changes_count = len(changes_report)
+            rejected_count = len(rejected_data)
             
             st.write("**📈 Key Insights:**")
             if summary.get('fixed', 0) > 0:
@@ -395,7 +410,11 @@ class EmailValidatorUI:
                 duplicates_metric.metric("🔄 Duplicates", counters.get('duplicates', 0))
             
             # Process the file
-            self.results = self.pipeline.process_file(uploaded_file, update_progress)
+            results = self.pipeline.process_file(uploaded_file, update_progress)
+            
+            # Store results in session state to persist across reruns
+            st.session_state.processing_results = results
+            st.session_state.processing_options = options
             
             # Show completion
             progress_bar.progress(1.0)
@@ -409,13 +428,15 @@ class EmailValidatorUI:
     
     def _render_results_section(self):
         """Render results and download section with enhanced analytics"""
-        if not self.results:
+        # Use results from session state to persist across reruns
+        results = st.session_state.processing_results
+        if not results:
             return
         
         st.subheader("📊 Results Summary")
         
         # Summary metrics  
-        summary = self.results.get('summary', {})
+        summary = results.get('summary', {})
         total_processed = summary.get('accepted', 0) + summary.get('fixed', 0) + summary.get('removed', 0) + summary.get('duplicates', 0)
         
         col1, col2, col3, col4 = st.columns(4)
@@ -437,8 +458,8 @@ class EmailValidatorUI:
         
         with col1:
             # Main cleaned dataset
-            if 'cleaned_data' in self.results:
-                cleaned_data = self.results['cleaned_data']
+            if 'cleaned_data' in results:
+                cleaned_data = results['cleaned_data']
                 filename = f"cleaned_{int(time.time())}"
                 
                 if isinstance(cleaned_data, dict):  # Excel with multiple sheets
@@ -464,8 +485,8 @@ class EmailValidatorUI:
         
         with col2:
             # Rejected dataset
-            if 'rejected_data' in self.results and not self.results['rejected_data'].empty:
-                rejected_csv = self.results['rejected_data'].to_csv(index=False)
+            if 'rejected_data' in results and not results['rejected_data'].empty:
+                rejected_csv = results['rejected_data'].to_csv(index=False)
                 st.download_button(
                     "🗑️ Download Rejected Rows",
                     data=rejected_csv,
@@ -474,25 +495,37 @@ class EmailValidatorUI:
                 )
         
         # Additional reports
-        if self.results.get('options', {}).get('export_reports', False):
+        if results.get('options', {}).get('export_reports', False):
             col3, col4 = st.columns(2)
             
             with col3:
-                if 'changes_report' in self.results and not self.results['changes_report'].empty:
-                    changes_csv = self.results['changes_report'].to_csv(index=False)
-                    st.download_button(
-                        "📝 Download Changes Report",
-                        data=changes_csv,
-                        file_name=f"changes_{int(time.time())}.csv",
-                        mime="text/csv"
-                    )
+                if 'changes_report' in results:
+                    changes_report = results['changes_report']
+                    if not changes_report.empty:
+                        changes_csv = changes_report.to_csv(index=False)
+                        st.download_button(
+                            "📝 Download Changes Report",
+                            data=changes_csv,
+                            file_name=f"changes_{int(time.time())}.csv",
+                            mime="text/csv"
+                        )
+                    else:
+                        st.info("📝 No changes made to email addresses")
             
             with col4:
-                if 'duplicates_report' in self.results and not self.results['duplicates_report'].empty:
-                    duplicates_csv = self.results['duplicates_report'].to_csv(index=False)
-                    st.download_button(
-                        "🔄 Download Duplicates Report",
-                        data=duplicates_csv,
-                        file_name=f"duplicates_{int(time.time())}.csv",
-                        mime="text/csv"
-                    )
+                if 'duplicates_report' in results:
+                    duplicates_report = results['duplicates_report']
+                    if not duplicates_report.empty:
+                        duplicates_csv = duplicates_report.to_csv(index=False)
+                        st.download_button(
+                            "🔄 Download Duplicates Report",
+                            data=duplicates_csv,
+                            file_name=f"duplicates_{int(time.time())}.csv",
+                            mime="text/csv"
+                        )
+                        # Show preview of duplicates found
+                        total_duplicates = len(duplicates_report[duplicates_report['status'] == 'REMOVED'])
+                        if total_duplicates > 0:
+                            st.caption(f"🔄 Found {total_duplicates} duplicate emails across {len(duplicates_report['canonical_key'].unique())} groups")
+                    else:
+                        st.info("🔄 No duplicate emails found")

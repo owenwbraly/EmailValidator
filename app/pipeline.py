@@ -299,7 +299,9 @@ class EmailValidationPipeline:
         # Convert lists to DataFrames
         rejected_df = pd.DataFrame(rejected_rows) if rejected_rows else pd.DataFrame()
         changes_df = pd.DataFrame(changes) if changes else pd.DataFrame()
-        duplicates_df = pd.DataFrame(duplicates_report) if duplicates_report else pd.DataFrame()
+        
+        # Convert duplicates report to a flatter, more readable format
+        duplicates_df = self._format_duplicates_report(duplicates_report)
         
         return {
             'cleaned_data': cleaned_data,
@@ -309,6 +311,40 @@ class EmailValidationPipeline:
             'summary': self.counters.copy(),
             'options': self.options
         }
+    
+    def _format_duplicates_report(self, duplicates_report: List[Dict]) -> pd.DataFrame:
+        """Format duplicates report into a clear, flat DataFrame"""
+        if not duplicates_report:
+            return pd.DataFrame()
+        
+        formatted_rows = []
+        for group in duplicates_report:
+            canonical_key = group.get('canonical_key', 'Unknown')
+            keeper = group.get('keeper', {})
+            duplicates = group.get('duplicates', [])
+            
+            # Add the keeper row
+            formatted_rows.append({
+                'canonical_key': canonical_key,
+                'status': 'KEPT',
+                'sheet': keeper.get('sheet', ''),
+                'row_index': keeper.get('row_index', ''),
+                'email_address': keeper.get('email', ''),
+                'duplicate_group_size': len(duplicates) + 1
+            })
+            
+            # Add each duplicate row
+            for dup in duplicates:
+                formatted_rows.append({
+                    'canonical_key': canonical_key,
+                    'status': 'REMOVED',
+                    'sheet': dup.get('sheet', ''),
+                    'row_index': dup.get('row_index', ''),
+                    'email_address': dup.get('email', ''),
+                    'duplicate_group_size': len(duplicates) + 1
+                })
+        
+        return pd.DataFrame(formatted_rows)
     
     def _update_progress(self, status: str, progress: float, callback: Callable):
         """Update progress and counters"""
