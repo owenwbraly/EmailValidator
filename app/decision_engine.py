@@ -5,8 +5,7 @@ LLM processing is optional and only for 'review' cases
 """
 
 from typing import Dict, Any, Optional, List
-from .features import FeatureExtractor
-from .normalize import EmailNormalizer
+from .deterministic_email_engine import validate_email_deterministic, load_reference_sets, canonical_key
 
 
 class DeterministicDecisionEngine:
@@ -15,246 +14,81 @@ class DeterministicDecisionEngine:
         self.confidence_threshold = options.get('confidence_threshold', 0.85)
         self.exclude_role_accounts = options.get('exclude_role_accounts', True)
         
-        # Initialize components
-        self.feature_extractor = FeatureExtractor()
-        self.normalizer = EmailNormalizer()
+        # Load reference sets for the new deterministic engine
+        reference_sets = load_reference_sets()
+        
+        # Type cast reference sets for proper typing (handle potential None/object values)
+        disposable = reference_sets.get('disposable_set', set())
+        self.disposable_set = disposable if isinstance(disposable, set) else set(disposable) if disposable else set()
+        
+        roles = reference_sets.get('role_locals', set()) 
+        self.role_locals = roles if isinstance(roles, set) else set(roles) if roles else set()
+        
+        domains = reference_sets.get('top_domains', [])
+        self.top_domains = domains if isinstance(domains, list) else list(domains) if domains else []
+        
+        tlds = reference_sets.get('tld_whitelist')
+        self.tld_whitelist = tlds if isinstance(tlds, set) else set(tlds) if tlds else None
     
     def process_email(self, original_email: str) -> Dict[str, Any]:
         """
-        Process email with deterministic-first approach
+        Process email with new deterministic engine
         Returns decision dict with action, output_email, confidence, changed, reason
         """
-        # Step 1: Extract features
-        features = self.feature_extractor.extract_features(original_email)
+        # Use the new deterministic engine
+        result = validate_email_deterministic(
+            original_email,
+            exclude_role_accounts=self.exclude_role_accounts,
+            disposable_set=self.disposable_set,
+            role_locals=self.role_locals,
+            top_domains=self.top_domains,
+            tld_whitelist=self.tld_whitelist
+        )
         
-        # Step 2: Apply normalization
-        normalized_email = self.normalizer.normalize_email(original_email, features)
-        features['normalized_email'] = normalized_email
-        
-        # Step 3: Make deterministic decision
-        decision = self._make_deterministic_decision(original_email, normalized_email, features)
-        
-        return decision
+        # Map new engine results to expected format
+        return self._map_result_to_legacy_format(original_email, result)
     
-    def _make_deterministic_decision(self, original_email: str, normalized_email: str, 
-                                   features: Dict[str, Any]) -> Dict[str, Any]:
+    def _map_result_to_legacy_format(self, original_email: str, result) -> Dict[str, Any]:
         """
-        Make deterministic decision based on features and rules
-        Returns: accept, fix_auto, review, suppress
+        Map new deterministic engine result to legacy format expected by pipeline
         """
-        flags = features.get('flags', {})
+        # Map actions: suppress -> remove for compatibility
+        action = result.action
+        if action == 'suppress':
+            action = 'remove'
+        elif action == 'fix_auto':
+            action = 'fix_auto'
         
-        # Step 1: Check for immediate suppression conditions
-        suppression_reason = self._check_suppression_conditions(features)
-        if suppression_reason:
-            return {
-                'action': 'remove',
-                'output_email': original_email,
-                'confidence': 1.0,
-                'changed': False,
-                'reason': suppression_reason,
-                'features': features
-            }
+        # Determine output email and if it changed
+        output_email = result.suggested_fix if result.suggested_fix else result.normalized_email
+        changed = output_email != original_email
         
-        # Step 2: Check for high-confidence automatic fixes
-        fix_result = self._check_auto_fixes(original_email, normalized_email, features)
-        if fix_result:
-            return fix_result
+        # Create features dict for compatibility
+        features = {
+            'risk_reasons': result.risk_reasons,
+            'canonical_key': result.canonical_key,
+            'suggested_fix': result.suggested_fix,
+            'normalized_email': result.normalized_email
+        }
         
-        # Step 3: Check for acceptance conditions
-        if self._is_safe_to_accept(features):
-            return {
-                'action': 'accept',
-                'output_email': normalized_email,
-                'confidence': 0.95,
-                'changed': normalized_email != original_email,
-                'reason': 'Deterministic accept - valid syntax and safe domain',
-                'features': features
-            }
-        
-        # Step 4: Risky or ambiguous cases need review
-        risk_flags = self._get_risk_flags(features)
-        if risk_flags:
-            return {
-                'action': 'review',
-                'output_email': normalized_email,
-                'confidence': 0.5,
-                'changed': normalized_email != original_email,
-                'reason': f'Needs review - risk flags: {", ".join(risk_flags)}',
-                'features': features
-            }
-        
-        # Step 5: Default to review for unknown cases
         return {
-            'action': 'review',
-            'output_email': normalized_email,
-            'confidence': 0.3,
-            'changed': normalized_email != original_email,
-            'reason': 'Deterministic review - insufficient confidence for auto-decision',
+            'action': action,
+            'output_email': output_email,
+            'confidence': result.confidence,
+            'changed': changed,
+            'reason': result.notes or f'{action} - {result.confidence:.1%} confidence',
             'features': features
         }
     
-    def _check_suppression_conditions(self, features: Dict[str, Any]) -> Optional[str]:
-        """
-        Check for conditions that mandate suppression
-        Returns reason string if suppression required, None otherwise
-        """
-        flags = features.get('flags', {})
-        
-        # Invalid syntax - hard failures
-        if not features.get('syntax_valid', True):
-            syntax_issues = []
-            if flags.get('missing_at'): syntax_issues.append('missing @')
-            if flags.get('multiple_at'): syntax_issues.append('multiple @')
-            if flags.get('empty_parts'): syntax_issues.append('empty parts')
-            if flags.get('local_too_long'): syntax_issues.append('local too long')
-            if flags.get('domain_too_long'): syntax_issues.append('domain too long')
-            if flags.get('local_dot_boundaries'): syntax_issues.append('local dot boundaries')
-            if flags.get('domain_dot_boundaries'): syntax_issues.append('domain dot boundaries')
-            if flags.get('local_invalid_chars'): syntax_issues.append('invalid characters')
-            
-            if syntax_issues:
-                return f"Invalid syntax: {', '.join(syntax_issues)}"
-        
-        # Invalid/dangerous domains
-        if flags.get('invalid_tld'):
-            return "Invalid TLD"
-        
-        if flags.get('idna_error'):
-            return "Domain encoding error"
-        
-        # Policy-based exclusions
-        if flags.get('disposable_domain'):
-            return "Disposable domain"
-        
-        if self.exclude_role_accounts and flags.get('role_account'):
-            return "Role account (excluded by policy)"
-        
-        # Security risks
-        if flags.get('unicode_confusable'):
-            return "Dangerous Unicode confusables"
-        
-        # Obviously fake/test emails
-        if flags.get('test_email'):
-            return "Test/example email"
-        
-        return None
     
-    def _check_auto_fixes(self, original_email: str, normalized_email: str, 
-                         features: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """
-        Check for high-confidence automatic fixes
-        Returns decision dict if auto-fix available, None otherwise
-        """
-        corrections = features.get('suggested_corrections', [])
-        
-        # Apply high-confidence typo corrections
-        for correction in corrections:
-            if correction['confidence'] >= 0.90:
-                if correction['type'] in ['tld_typo', 'domain_typo']:
-                    local, domain = original_email.rsplit('@', 1)
-                    if domain.lower() == correction['original']:
-                        fixed_email = f"{local}@{correction['suggested']}"
-                        # Only apply correction if it actually changes the email
-                        if fixed_email != original_email:
-                            return {
-                                'action': 'fix_auto',
-                                'output_email': fixed_email,
-                                'confidence': correction['confidence'],
-                                'changed': True,
-                                'reason': f'Auto-fix {correction["type"]}: {correction["original"]} → {correction["suggested"]}',
-                                'features': features
-                            }
-        
-        # Basic normalization fixes
-        if normalized_email != original_email:
-            # Check if normalization fixed significant issues
-            fixed_issues = []
-            flags = features.get('flags', {})
-            
-            if flags.get('has_whitespace'): fixed_issues.append('whitespace')
-            if flags.get('has_zero_width'): fixed_issues.append('zero-width chars')
-            if flags.get('has_smart_quotes'): fixed_issues.append('smart quotes')
-            if flags.get('has_angle_brackets'): fixed_issues.append('angle brackets')
-            if flags.get('has_fullwidth_at'): fixed_issues.append('fullwidth @')
-            
-            if fixed_issues and self._is_safe_to_accept(features):
-                return {
-                    'action': 'fix_auto',
-                    'output_email': normalized_email,
-                    'confidence': 0.90,
-                    'changed': True,
-                    'reason': f'Auto-fix normalization: {", ".join(fixed_issues)}',
-                    'features': features
-                }
-        
-        return None
     
-    def _is_safe_to_accept(self, features: Dict[str, Any]) -> bool:
-        """
-        Check if email is safe to accept automatically
-        """
-        flags = features.get('flags', {})
-        
-        # Must have valid syntax
-        if not features.get('syntax_valid', True):
-            return False
-        
-        # Must not have serious risk flags
-        risk_flags = [
-            'invalid_tld', 'idna_error', 'disposable_domain', 
-            'unicode_confusable', 'test_email'
-        ]
-        
-        if any(flags.get(flag) for flag in risk_flags):
-            return False
-        
-        # Role accounts need policy check
-        if flags.get('role_account') and self.exclude_role_accounts:
-            return False
-        
-        # Must have reasonable domain
-        if not features.get('tld') and not flags.get('free_mail_domain'):
-            return False
-        
-        return True
     
-    def _get_risk_flags(self, features: Dict[str, Any]) -> List[str]:
-        """Get list of risk flags present in features"""
-        flags = features.get('flags', {})
-        risk_flags = []
-        
-        # Structural risks
-        if flags.get('domain_consecutive_dots'):
-            risk_flags.append('domain_consecutive_dots')
-        
-        if flags.get('local_consecutive_dots'):
-            risk_flags.append('local_consecutive_dots')
-        
-        if flags.get('label_too_long'):
-            risk_flags.append('label_too_long')
-        
-        if flags.get('label_hyphen_boundaries'):
-            risk_flags.append('label_hyphen_boundaries')
-        
-        # Content risks
-        if flags.get('low_diversity'):
-            risk_flags.append('low_diversity')
-        
-        if flags.get('non_ascii_domain'):
-            risk_flags.append('non_ascii_domain')
-        
-        # Policy-related flags (not automatically excluding)
-        if flags.get('role_account') and not self.exclude_role_accounts:
-            risk_flags.append('role_account')
-        
-        return risk_flags
     
     def get_canonical_key(self, email: str, provider_aware: bool = True) -> str:
         """
-        Get canonical form for de-duplication
+        Get canonical form for de-duplication using new engine
         """
-        return self.normalizer.get_canonical_form(email, provider_aware)
+        return canonical_key(email, provider_aware) or email.lower()
     
     def generate_canonical_key(self, email: str, provider_aware: bool = True) -> str:
         """
