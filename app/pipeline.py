@@ -57,10 +57,10 @@ class EmailValidationPipeline:
         
         self._update_progress("Detecting email columns...", 0.10, progress_callback)
         
-        # Step 2: Detect email columns per sheet
+        # Step 2: Detect email columns per sheet using enhanced detection
         email_columns = {}
         for sheet_name, df in file_data.items():
-            email_col = self.detector.detect_email_column(df)
+            email_col = self.detector.detect_best_email_column(df)
             if email_col:
                 email_columns[sheet_name] = email_col
         
@@ -100,11 +100,14 @@ class EmailValidationPipeline:
         # Step 7: De-duplication across all processed data
         dedupe_results = self.deduplicator.deduplicate_records(all_results)
         
-        # Update counters
-        self.counters['duplicates'] = len(dedupe_results['duplicates_report'])
+        # Initialize duplicate counter (will be updated in _apply_deduplication)
+        self.counters['duplicates'] = 0
         
         # Step 8: Apply de-duplication results back to sheets
         final_sheets = self._apply_deduplication(processed_sheets, dedupe_results, email_columns)
+        
+        # Set duplicate counter to total rows removed
+        self.counters['duplicates'] = sum(len(group['duplicates']) for group in dedupe_results['duplicates_report'])
         
         self._update_progress("Generating reports...", 0.95, progress_callback)
         
@@ -274,8 +277,6 @@ class EmailValidationPipeline:
                 if rows_to_remove:
                     df_cleaned = df.drop(rows_to_remove, errors='ignore')
                     final_sheets[sheet_name] = df_cleaned
-                    # Update duplicate counter
-                    self.counters['duplicates'] += len(rows_to_remove)
                 else:
                     final_sheets[sheet_name] = df
             else:
