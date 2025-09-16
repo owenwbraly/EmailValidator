@@ -262,7 +262,7 @@ class EmailValidationPipeline:
         # Build set of (sheet, row_index) tuples to remove
         for duplicate_group in dedupe_results['duplicates_report']:
             if isinstance(duplicate_group, dict) and 'duplicates' in duplicate_group:
-                for dup in duplicate_group['duplicates'][1:]:  # Keep first, remove rest
+                for dup in duplicate_group['duplicates']:  # Remove ALL duplicates, keep only keeper
                     duplicates_to_remove.add((dup['sheet'], dup['row_index']))
         
         # Remove duplicates from each sheet
