@@ -155,14 +155,16 @@ class DeterministicDecisionEngine:
                     local, domain = original_email.rsplit('@', 1)
                     if domain.lower() == correction['original']:
                         fixed_email = f"{local}@{correction['suggested']}"
-                        return {
-                            'action': 'fix_auto',
-                            'output_email': fixed_email,
-                            'confidence': correction['confidence'],
-                            'changed': True,
-                            'reason': f'Auto-fix {correction["type"]}: {correction["original"]} → {correction["suggested"]}',
-                            'features': features
-                        }
+                        # Only apply correction if it actually changes the email
+                        if fixed_email != original_email:
+                            return {
+                                'action': 'fix_auto',
+                                'output_email': fixed_email,
+                                'confidence': correction['confidence'],
+                                'changed': True,
+                                'reason': f'Auto-fix {correction["type"]}: {correction["original"]} → {correction["suggested"]}',
+                                'features': features
+                            }
         
         # Basic normalization fixes
         if normalized_email != original_email:

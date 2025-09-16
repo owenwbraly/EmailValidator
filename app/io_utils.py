@@ -193,6 +193,112 @@ class FileHandler:
         else:
             raise ValueError(f"Unsupported file format: {file_extension}")
     
+    def get_file_row_counts(self, uploaded_file) -> Dict[str, int]:
+        """
+        Get actual row counts without loading full data for UI display
+        """
+        file_extension = uploaded_file.name.lower().split('.')[-1]
+        
+        try:
+            if file_extension == 'csv':
+                return self._count_csv_rows(uploaded_file)
+            elif file_extension in ['xlsx', 'xls']:
+                return self._count_excel_rows(uploaded_file)
+            elif file_extension == 'json':
+                return self._count_json_rows(uploaded_file)
+            elif file_extension == 'tsv':
+                return self._count_tsv_rows(uploaded_file)
+            else:
+                raise ValueError(f"Unsupported file format: {file_extension}")
+        except Exception:
+            # Fallback to preview count if fast counting fails
+            preview_data = self.get_file_preview(uploaded_file)
+            return {sheet: len(df) for sheet, df in preview_data.items()}
+    
+    def _count_csv_rows(self, uploaded_file) -> Dict[str, int]:
+        """Count rows in CSV file without loading all data"""
+        try:
+            uploaded_file.seek(0)
+            file_content = uploaded_file.getvalue()
+            
+            if isinstance(file_content, bytes):
+                # Try multiple encodings for better compatibility
+                for encoding in ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1']:
+                    try:
+                        file_content = file_content.decode(encoding)
+                        break
+                    except UnicodeDecodeError:
+                        continue
+                else:
+                    file_content = file_content.decode('utf-8', errors='replace')
+            
+            # Count lines manually (faster than pandas for counting)
+            lines = file_content.count('\n')
+            # Subtract 1 for header row
+            row_count = max(0, lines - 1)
+            
+            return {'main': row_count}
+        except Exception:
+            # Fallback to loading and counting
+            return {'main': len(self._preview_csv(uploaded_file)['main'])}
+    
+    def _count_excel_rows(self, uploaded_file) -> Dict[str, int]:
+        """Count rows in Excel file without loading all data"""
+        try:
+            uploaded_file.seek(0)
+            file_content = uploaded_file.getvalue()
+            excel_buffer = io.BytesIO(file_content)
+            
+            import openpyxl
+            workbook = openpyxl.load_workbook(excel_buffer, read_only=True, data_only=True)
+            row_counts = {}
+            
+            for sheet_name in workbook.sheetnames:
+                sheet = workbook[sheet_name]
+                # Count rows with data (max_row gives us the last row with data)
+                row_count = max(0, sheet.max_row - 1) if sheet.max_row else 0
+                row_counts[sheet_name] = row_count
+            
+            workbook.close()
+            return row_counts
+        except Exception:
+            # Fallback to preview counting
+            preview_data = self._preview_excel(uploaded_file)
+            return {sheet: len(df) for sheet, df in preview_data.items()}
+    
+    def _count_json_rows(self, uploaded_file) -> Dict[str, int]:
+        """Count rows in JSON file"""
+        try:
+            full_data = self._load_json(uploaded_file)
+            return {sheet: len(df) for sheet, df in full_data.items()}
+        except Exception:
+            preview_data = self._preview_json(uploaded_file)
+            return {sheet: len(df) for sheet, df in preview_data.items()}
+    
+    def _count_tsv_rows(self, uploaded_file) -> Dict[str, int]:
+        """Count rows in TSV file without loading all data"""
+        try:
+            uploaded_file.seek(0)
+            file_content = uploaded_file.getvalue()
+            
+            if isinstance(file_content, bytes):
+                for encoding in ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1']:
+                    try:
+                        file_content = file_content.decode(encoding)
+                        break
+                    except UnicodeDecodeError:
+                        continue
+                else:
+                    file_content = file_content.decode('utf-8', errors='replace')
+            
+            # Count lines manually
+            lines = file_content.count('\n')
+            row_count = max(0, lines - 1)  # Subtract header
+            
+            return {'main': row_count}
+        except Exception:
+            return {'main': len(self._preview_tsv(uploaded_file)['main'])}
+    
     def _preview_csv(self, uploaded_file) -> Dict[str, pd.DataFrame]:
         """Get preview of CSV file with limited rows"""
         try:

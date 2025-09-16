@@ -88,6 +88,7 @@ class EmailValidatorUI:
             # Use lightweight preview for large files
             file_handler = FileHandler()
             file_data = file_handler.get_file_preview(uploaded_file)
+            actual_row_counts = file_handler.get_file_row_counts(uploaded_file)
             
             # Show preview warning for large files
             file_size = len(uploaded_file.getvalue()) / (1024 * 1024)  # MB
@@ -122,10 +123,15 @@ class EmailValidatorUI:
             
             if uploaded_file.name.endswith('.csv'):
                 df = file_data['main']
+                actual_rows = actual_row_counts.get('main', len(df))
                 col1, col2, col3 = st.columns(3)
-                col1.metric("Rows", len(df))
+                col1.metric("Rows", f"{actual_rows:,}")
                 col2.metric("Columns", len(df.columns))
                 col3.metric("Email Column", "✅" if 'main' in email_columns_found else "❌")
+                
+                # Show preview notice if preview is limited
+                if len(df) < actual_rows:
+                    st.info(f"📋 Showing preview of first {len(df):,} rows out of {actual_rows:,} total rows")
                 
                 st.write("**Column Headers:**")
                 email_col = email_columns_found.get('main')
@@ -137,20 +143,31 @@ class EmailValidatorUI:
                 
             else:
                 # Multi-sheet file (Excel/JSON with multiple sections)
-                total_rows = sum(len(df) for df in file_data.values())
+                actual_total_rows = sum(actual_row_counts.values())
+                preview_total_rows = sum(len(df) for df in file_data.values())
                 sheets_with_emails = len(email_columns_found)
                 
                 col1, col2, col3 = st.columns(3)
                 col1.metric("Total Sheets", len(file_data))
-                col2.metric("Total Rows", total_rows)
+                col2.metric("Total Rows", f"{actual_total_rows:,}")
                 col3.metric("Sheets with Emails", sheets_with_emails)
+                
+                # Show preview notice if data is limited
+                if preview_total_rows < actual_total_rows:
+                    st.info(f"📋 Showing preview of first rows per sheet. Total actual rows: {actual_total_rows:,}")
                 
                 # Show each sheet
                 for sheet_name, df in file_data.items():
                     has_email = sheet_name in email_columns_found
                     email_icon = "📧" if has_email else "📄"
+                    actual_sheet_rows = actual_row_counts.get(sheet_name, len(df))
                     
-                    with st.expander(f"{email_icon} **{sheet_name}** ({len(df)} rows, {len(df.columns)} columns)"):
+                    # Sheet title with actual row count
+                    sheet_title = f"{email_icon} **{sheet_name}** ({actual_sheet_rows:,} rows, {len(df.columns)} columns)"
+                    if len(df) < actual_sheet_rows:
+                        sheet_title += f" (showing first {len(df):,})"
+                    
+                    with st.expander(sheet_title):
                         if has_email:
                             st.success(f"Email column: **{email_columns_found[sheet_name]}**")
                             

@@ -46,15 +46,26 @@ class FeatureExtractor:
             return set()
     
     def _get_default_typo_maps(self) -> Dict[str, Dict[str, str]]:
-        """Default typo correction maps"""
+        """Default typo correction maps - only obvious typos, not legitimate TLDs"""
         return {
             "tld_typos": {
+                # Only obvious typos, not legitimate country codes like .co (Colombia)
                 ".con": ".com",
                 ".cmo": ".com", 
                 ".cim": ".com",
                 ".c0m": ".com",
-                ".co": ".com",
-                ".comm": ".com"
+                ".comm": ".com",
+                ".comn": ".com",
+                ".vom": ".com",
+                ".xom": ".com",
+                ".dom": ".com",
+                ".ocm": ".com",
+                ".nett": ".net",
+                ".ne": ".net",
+                ".nte": ".net",
+                ".orgg": ".org",
+                ".ogr": ".org",
+                ".rog": ".org"
             },
             "domain_typos": {
                 "gmial.com": "gmail.com",
@@ -64,7 +75,9 @@ class FeatureExtractor:
                 "hotmial.com": "hotmail.com",
                 "yahho.com": "yahoo.com",
                 "yahooo.com": "yahoo.com",
-                "faceboook.com": "facebook.com"
+                "faceboook.com": "facebook.com",
+                "goolge.com": "google.com",
+                "googel.com": "google.com"
             }
         }
     
