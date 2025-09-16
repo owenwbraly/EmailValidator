@@ -22,25 +22,26 @@ class EmailValidatorUI:
     def run(self):
         """Main UI rendering method"""
         # Header
-        st.title("📧 Email Validator • Cleaner • Deduper (LLM-First)")
-        st.markdown("**LLM-powered validation and cleaning for big spreadsheets.**")
+        st.title("📧 Email Validator • Cleaner • Deduper (Deterministic-First)")
+        st.markdown("**Deterministic validation with optional AI assistance for big spreadsheets.**")
         
         # Important notice
         st.info("🔍 This tool validates plausibility and hygiene. It does **not** guarantee SMTP deliverability.")
         
-        # Check for API keys and show blocking message if missing
-        if not self._check_api_keys():
-            st.error("🚫 **API Key Required**: This tool requires an LLM API key to function. Please set OPENAI_API_KEY or ANTHROPIC_API_KEY in your environment.")
-            st.stop()
-        
         # File upload section
         uploaded_file = self._render_upload_section()
         
-        # LLM settings section
-        llm_config = self._render_llm_settings()
-        
-        # Options section
+        # Options section (moved before LLM settings)
         options = self._render_options_section()
+        
+        # LLM settings section (conditional based on options)
+        llm_config = None
+        if options.get('enable_llm_review', False):
+            if self._has_api_keys():
+                llm_config = self._render_llm_settings()
+            else:
+                st.warning("⚠️ LLM review enabled but no API keys found. Will use deterministic processing only.")
+                llm_config = {"provider": "openai", "model": "gpt-5"}  # Dummy config
         
         # Process button and progress
         if uploaded_file is not None:
@@ -51,7 +52,7 @@ class EmailValidatorUI:
         if self.results:
             self._render_results_section()
     
-    def _check_api_keys(self) -> bool:
+    def _has_api_keys(self) -> bool:
         """Check if at least one API key is available"""
         openai_key = os.getenv("OPENAI_API_KEY")
         anthropic_key = os.getenv("ANTHROPIC_API_KEY")
@@ -84,9 +85,14 @@ class EmailValidatorUI:
             from .detect import EmailColumnDetector
             from .io_utils import FileHandler
             
-            # Load file data
+            # Use lightweight preview for large files
             file_handler = FileHandler()
-            file_data = file_handler.load_file(uploaded_file)
+            file_data = file_handler.get_file_preview(uploaded_file)
+            
+            # Show preview warning for large files
+            file_size = len(uploaded_file.getvalue()) / (1024 * 1024)  # MB
+            if file_size > 10:
+                st.info(f"ℹ️ Large file detected ({file_size:.1f} MB). Showing preview of first {file_handler.preview_rows} rows per sheet.")
             detector = EmailColumnDetector()
             
             # Detect email columns across all sheets
@@ -295,13 +301,22 @@ class EmailValidatorUI:
         col1, col2 = st.columns(2)
         
         with col1:
+            enable_llm_review = st.checkbox(
+                "🤖 Enable LLM for ambiguous cases",
+                value=False,
+                help="Use AI to review emails that deterministic rules can't decide. Requires API key."
+            )
+            
+            if enable_llm_review and not self._has_api_keys():
+                st.warning("⚠️ LLM enabled but no API keys found. Will use deterministic processing only.")
+            
             confidence_threshold = st.slider(
                 "Confidence Threshold",
                 min_value=0.50,
                 max_value=0.99,
                 value=0.85,
                 step=0.05,
-                help="Minimum confidence required for automatic fixes"
+                help="Minimum confidence required for LLM decisions (when LLM enabled)"
             )
             
             exclude_role_accounts = st.checkbox(
@@ -324,6 +339,7 @@ class EmailValidatorUI:
             )
         
         return {
+            "enable_llm_review": enable_llm_review,
             "confidence_threshold": confidence_threshold,
             "exclude_role_accounts": exclude_role_accounts,
             "provider_aware_dedup": provider_aware_dedup,

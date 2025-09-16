@@ -16,21 +16,25 @@ from .normalize import EmailNormalizer
 from .llm_adapter import LLMAdapter
 from .routing import DecisionRouter
 from .dedupe import EmailDeduplicator
+from .decision_engine import DeterministicDecisionEngine
 
 
 class EmailValidationPipeline:
     def __init__(self, llm_config: Dict[str, Any], options: Dict[str, Any]):
         self.llm_config = llm_config
         self.options = options
+        self.enable_llm_review = options.get('enable_llm_review', False)
         
         # Initialize components
         self.file_handler = FileHandler()
         self.detector = EmailColumnDetector()
-        self.feature_extractor = FeatureExtractor()
-        self.normalizer = EmailNormalizer()
-        self.llm_adapter = LLMAdapter(llm_config)
-        self.router = DecisionRouter(options)
+        self.decision_engine = DeterministicDecisionEngine(options)
         self.deduplicator = EmailDeduplicator(options)
+        
+        # LLM components - only initialize if enabled
+        if self.enable_llm_review:
+            self.llm_adapter = LLMAdapter(llm_config)
+            self.router = DecisionRouter(options)
         
         # Progress tracking
         self.counters = {
@@ -116,7 +120,7 @@ class EmailValidationPipeline:
     
     def _process_sheet(self, df: pd.DataFrame, sheet_name: str, email_col: str, 
                       base_processed: int, total_rows: int, progress_callback: Callable) -> Dict[str, Any]:
-        """Process a single sheet with email column"""
+        """Process a single sheet with email column using deterministic-first approach"""
         processed_rows = []
         changes = []
         rejected = []
@@ -124,82 +128,123 @@ class EmailValidationPipeline:
         # Create a copy of the dataframe to modify
         cleaned_df = df.copy()
         
-        for idx, row in df.iterrows():
-            email = str(row[email_col]).strip()
+        # Convert email column to string and clean
+        email_series = df[email_col].astype(str).str.strip()
+        
+        # Filter out empty/invalid emails
+        valid_mask = ~email_series.isin(['', 'nan', 'None']) & email_series.notna()
+        valid_emails = email_series[valid_mask]
+        
+        # Process emails in chunks for memory efficiency
+        chunk_size = min(1000, len(valid_emails))  # Process in smaller chunks
+        
+        for start_idx in range(0, len(valid_emails), chunk_size):
+            end_idx = min(start_idx + chunk_size, len(valid_emails))
+            chunk_emails = valid_emails.iloc[start_idx:end_idx]
             
-            if pd.isna(email) or email in ['', 'nan', 'None']:
-                # Skip empty emails but keep the row
+            # Vectorized deterministic processing
+            chunk_results = []
+            review_cases = []
+            
+            for idx, email in chunk_emails.items():
+                # Deterministic decision first
+                decision = self.decision_engine.process_email(email)
+                
+                if decision['action'] == 'review' and self.enable_llm_review:
+                    # Queue for LLM review
+                    review_cases.append((idx, email, decision))
+                else:
+                    # Finalize deterministic decision
+                    chunk_results.append((idx, email, decision))
+            
+            # Batch LLM processing for review cases (if enabled)
+            if review_cases and self.enable_llm_review:
+                for idx, email, deterministic_decision in review_cases:
+                    try:
+                        # LLM classification for review cases only
+                        features = deterministic_decision['features']
+                        llm_result = self.llm_adapter.classify_email(email, features)
+                        
+                        # Override deterministic decision with LLM result
+                        llm_decision = self.router.decide(email, deterministic_decision['output_email'], llm_result, features)
+                        chunk_results.append((idx, email, llm_decision))
+                        
+                    except Exception as e:
+                        # LLM failed, fall back to deterministic decision
+                        print(f"LLM processing failed, using deterministic decision: {str(e)}")
+                        chunk_results.append((idx, email, deterministic_decision))
+            else:
+                # Add review cases as-is if LLM disabled
+                for idx, email, decision in review_cases:
+                    chunk_results.append((idx, email, decision))
+            
+            # Process chunk results
+            for idx, email, decision in chunk_results:
+                # Track results
                 processed_rows.append({
                     'sheet': sheet_name,
                     'row_index': idx,
                     'original_email': email,
-                    'processed_email': email,
-                    'action': 'skip_empty',
-                    'confidence': 1.0
+                    'processed_email': decision['output_email'],
+                    'action': decision['action'],
+                    'confidence': decision['confidence'],
+                    'canonical_key': self.decision_engine.get_canonical_key(decision['output_email'])
                 })
-                continue
+                
+                # Update counters
+                if decision['action'] in ['accept', 'fix_auto']:
+                    if decision['changed']:
+                        self.counters['fixed'] += 1
+                    else:
+                        self.counters['accepted'] += 1
+                elif decision['action'] == 'remove':
+                    self.counters['removed'] += 1
+                
+                # Record changes
+                if decision['changed']:
+                    changes.append({
+                        'sheet': sheet_name,
+                        'row_index': idx,
+                        'original_email': email,
+                        'new_email': decision['output_email'],
+                        'reason': decision['reason'],
+                        'confidence': decision['confidence']
+                    })
+                
+                # Handle removed rows
+                if decision['action'] == 'remove':
+                    row_data = df.loc[idx].to_dict()
+                    rejected.append({
+                        'sheet': sheet_name,
+                        'row_index': idx,
+                        'original_email': email,
+                        'reason': decision['reason'],
+                        'confidence': decision['confidence'],
+                        **row_data
+                    })
+                    # Mark for removal from cleaned dataframe
+                    cleaned_df = cleaned_df.drop(idx)
+                else:
+                    # Update email in cleaned dataframe
+                    cleaned_df.at[idx, email_col] = decision['output_email']
             
-            # Step 3: Extract deterministic features
-            features = self.feature_extractor.extract_features(email)
-            
-            # Step 4: Normalize email
-            normalized = self.normalizer.normalize_email(email, features)
-            
-            # Step 5: LLM classification
-            llm_result = self.llm_adapter.classify_email(email, features)
-            
-            # Step 6: Make routing decision
-            decision = self.router.decide(email, normalized, llm_result, features)
-            
-            # Track results
+            # Update progress
+            current_progress = 0.10 + 0.75 * (base_processed + end_idx) / total_rows
+            self._update_progress(f"Processing {sheet_name}...", current_progress, progress_callback)
+        
+        # Handle empty emails (keep them as-is)
+        empty_mask = ~valid_mask
+        for idx in df[empty_mask].index:
+            email = str(df.at[idx, email_col])
             processed_rows.append({
                 'sheet': sheet_name,
                 'row_index': idx,
                 'original_email': email,
-                'processed_email': decision['output_email'],
-                'action': decision['action'],
-                'confidence': decision['confidence'],
-                'canonical_key': self.deduplicator.generate_canonical_key(decision['output_email'])
+                'processed_email': email,
+                'action': 'skip_empty',
+                'confidence': 1.0,
+                'canonical_key': ''
             })
-            
-            # Update counters
-            if decision['action'] == 'accept':
-                self.counters['accepted'] += 1
-            elif decision['action'] == 'fix':
-                self.counters['fixed'] += 1
-            elif decision['action'] == 'remove':
-                self.counters['removed'] += 1
-            
-            # Record changes
-            if decision['changed']:
-                changes.append({
-                    'sheet': sheet_name,
-                    'row_index': idx,
-                    'original_email': email,
-                    'new_email': decision['output_email'],
-                    'reason': decision['reason'],
-                    'confidence': decision['confidence']
-                })
-            
-            # Handle removed rows
-            if decision['action'] == 'remove':
-                rejected.append({
-                    'sheet': sheet_name,
-                    'row_index': idx,
-                    'original_email': email,
-                    'reason': decision['reason'],
-                    'confidence': decision['confidence'],
-                    **{col: row[col] for col in df.columns}  # Include all original columns
-                })
-                # Remove from cleaned dataframe
-                cleaned_df = cleaned_df.drop(idx)
-            else:
-                # Update email in cleaned dataframe
-                cleaned_df.at[idx, email_col] = decision['output_email']
-            
-            # Update progress
-            current_progress = 0.10 + 0.75 * (base_processed + idx + 1) / total_rows
-            self._update_progress(f"Processing {sheet_name}...", current_progress, progress_callback)
         
         return {
             'processed_rows': processed_rows,

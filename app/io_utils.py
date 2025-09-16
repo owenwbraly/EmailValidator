@@ -12,6 +12,7 @@ import openpyxl
 class FileHandler:
     def __init__(self, chunk_size: int = 20000):
         self.chunk_size = chunk_size
+        self.preview_rows = 200  # Maximum rows for preview
     
     def load_file(self, uploaded_file) -> Dict[str, pd.DataFrame]:
         """
@@ -147,6 +148,184 @@ class FileHandler:
             
         except Exception as e:
             raise ValueError(f"Error reading TSV file: {str(e)}")
+    
+    def get_file_preview(self, uploaded_file) -> Dict[str, pd.DataFrame]:
+        """
+        Get lightweight preview of file with limited rows for UI display
+        """
+        file_extension = uploaded_file.name.lower().split('.')[-1]
+        
+        if file_extension == 'csv':
+            return self._preview_csv(uploaded_file)
+        elif file_extension in ['xlsx', 'xls']:
+            return self._preview_excel(uploaded_file)
+        elif file_extension == 'json':
+            return self._preview_json(uploaded_file)
+        elif file_extension == 'tsv':
+            return self._preview_tsv(uploaded_file)
+        else:
+            raise ValueError(f"Unsupported file format: {file_extension}")
+    
+    def _preview_csv(self, uploaded_file) -> Dict[str, pd.DataFrame]:
+        """Get preview of CSV file with limited rows"""
+        try:
+            uploaded_file.seek(0)
+            file_content = uploaded_file.getvalue()
+            
+            if isinstance(file_content, bytes):
+                file_content = file_content.decode('utf-8')
+            
+            csv_buffer = io.StringIO(file_content)
+            
+            # Read only preview_rows for preview
+            df = pd.read_csv(csv_buffer, nrows=self.preview_rows)
+            
+            return {'main': df}
+            
+        except Exception as e:
+            raise ValueError(f"Error previewing CSV file: {str(e)}")
+    
+    def _preview_excel(self, uploaded_file) -> Dict[str, pd.DataFrame]:
+        """Get preview of Excel file with limited rows per sheet"""
+        try:
+            uploaded_file.seek(0)
+            file_content = uploaded_file.getvalue()
+            excel_buffer = io.BytesIO(file_content)
+            
+            # Use openpyxl for streaming read
+            workbook = openpyxl.load_workbook(excel_buffer, read_only=True, data_only=True)
+            sheets_dict = {}
+            
+            for sheet_name in workbook.sheetnames:
+                sheet = workbook[sheet_name]
+                
+                # Read limited rows for preview
+                rows_data = []
+                for i, row in enumerate(sheet.iter_rows(values_only=True)):
+                    if i >= self.preview_rows:
+                        break
+                    rows_data.append(row)
+                
+                if rows_data:
+                    # Convert to DataFrame
+                    df = pd.DataFrame(rows_data[1:], columns=rows_data[0] if rows_data else None)
+                    sheets_dict[sheet_name] = df
+            
+            workbook.close()
+            return sheets_dict
+            
+        except Exception as e:
+            raise ValueError(f"Error previewing Excel file: {str(e)}")
+    
+    def _preview_json(self, uploaded_file) -> Dict[str, pd.DataFrame]:
+        """Get preview of JSON file with limited rows"""
+        try:
+            # For JSON, load full structure but limit DataFrame rows
+            full_data = self._load_json(uploaded_file)
+            
+            preview_dict = {}
+            for sheet_name, df in full_data.items():
+                if len(df) > self.preview_rows:
+                    preview_dict[sheet_name] = df.head(self.preview_rows)
+                else:
+                    preview_dict[sheet_name] = df
+            
+            return preview_dict
+            
+        except Exception as e:
+            raise ValueError(f"Error previewing JSON file: {str(e)}")
+    
+    def _preview_tsv(self, uploaded_file) -> Dict[str, pd.DataFrame]:
+        """Get preview of TSV file with limited rows"""
+        try:
+            uploaded_file.seek(0)
+            file_content = uploaded_file.getvalue()
+            
+            if isinstance(file_content, bytes):
+                file_content = file_content.decode('utf-8')
+            
+            tsv_buffer = io.StringIO(file_content)
+            
+            # Read only preview_rows for preview
+            df = pd.read_csv(tsv_buffer, sep='\t', nrows=self.preview_rows)
+            
+            return {'main': df}
+            
+        except Exception as e:
+            raise ValueError(f"Error previewing TSV file: {str(e)}")
+    
+    def stream_csv_chunks(self, uploaded_file):
+        """
+        Generator that yields CSV chunks for memory-efficient processing
+        """
+        try:
+            uploaded_file.seek(0)
+            file_content = uploaded_file.getvalue()
+            
+            if isinstance(file_content, bytes):
+                file_content = file_content.decode('utf-8')
+            
+            csv_buffer = io.StringIO(file_content)
+            
+            # Use pandas chunked reading with proper settings for email processing
+            chunk_reader = pd.read_csv(
+                csv_buffer, 
+                chunksize=self.chunk_size,
+                dtype=str,  # Keep everything as strings for email processing
+                keep_default_na=False,  # Don't convert to NaN
+                na_filter=False  # Don't interpret as missing values
+            )
+            
+            for chunk in chunk_reader:
+                yield chunk
+                
+        except Exception as e:
+            raise ValueError(f"Error streaming CSV file: {str(e)}")
+    
+    def stream_excel_chunks(self, uploaded_file, sheet_name: str):
+        """
+        Generator that yields Excel sheet chunks for memory-efficient processing
+        """
+        try:
+            uploaded_file.seek(0)
+            file_content = uploaded_file.getvalue()
+            excel_buffer = io.BytesIO(file_content)
+            
+            # Use openpyxl for streaming read
+            workbook = openpyxl.load_workbook(excel_buffer, read_only=True, data_only=True)
+            
+            if sheet_name not in workbook.sheetnames:
+                raise ValueError(f"Sheet '{sheet_name}' not found in workbook")
+            
+            sheet = workbook[sheet_name]
+            
+            # Get header row
+            header_row = next(sheet.iter_rows(values_only=True))
+            
+            # Process in chunks
+            chunk_data = []
+            for row in sheet.iter_rows(values_only=True, min_row=2):  # Skip header
+                chunk_data.append(row)
+                
+                if len(chunk_data) >= self.chunk_size:
+                    # Yield chunk as DataFrame
+                    df = pd.DataFrame(chunk_data, columns=header_row)
+                    df = df.astype(str)  # Convert to strings for email processing
+                    df = df.replace('None', '')  # Replace None values
+                    yield df
+                    chunk_data = []
+            
+            # Yield remaining data
+            if chunk_data:
+                df = pd.DataFrame(chunk_data, columns=header_row)
+                df = df.astype(str)
+                df = df.replace('None', '')
+                yield df
+            
+            workbook.close()
+            
+        except Exception as e:
+            raise ValueError(f"Error streaming Excel file: {str(e)}")
     
     def save_to_excel(self, sheets_dict: Dict[str, pd.DataFrame]) -> bytes:
         """Save multiple sheets to Excel format and return bytes"""

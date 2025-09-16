@@ -1,0 +1,47 @@
+**Build a Python tool: “Update-Only Email Verifier”**
+
+**Goal**
+Create a program that ingests large `.csv` or `.xlsx` files (thousands of rows, multi-sheet), validates/fixes **only the Email column**, and writes an output file with **identical schema** (same sheets, columns, order). No new columns are added. Optionally emit a side-car “changes report”.
+
+---
+
+### Tech & Interfaces
+
+* **Language:** Python 3.11+
+* **Packages:** `pandas`, `openpyxl`, `fastapi`, `uvicorn`, `pydantic`, `email-validator`, `idna`, `tld`, `rapidfuzz`, `python-dotenv`.
+* **Runs as:**
+
+  1. **CLI**: `python -m app.cli --in INPUT --out OUTPUT [--confidence 0.85] [--deterministic-only]`
+  2. **Web UI (FastAPI)**: upload → process → download; progress log shown.
+
+---
+
+### Input / Output
+
+* **Input:** CSV or XLSX (may contain multiple sheets). The email header can vary; treat case-insensitive matches among: `email`, `email address`, `e-mail`, `work email`, `business email`.
+* **Output:** Same file type as input, with **only** the Email cells updated. Sheets without an Email column are passed through unchanged.
+* **Optional side-car:** `changes_report.csv` with columns: `sheet,row_index,original_email,new_email,reason,confidence`.
+
+---
+
+### Processing Pipeline
+
+1. **Load file**
+
+   * CSV: chunked reading for memory safety.
+   * XLSX: iterate sheets; for very large sheets support row streaming where possible.
+
+2. **Detect Email column**
+
+   * Case-insensitive header search using the set above; prefer exact `email` if multiple matches.
+
+3. **Deterministic pre-pass (no LLM)**
+
+   * Normalize: trim; remove zero-width chars; replace smart quotes; strip angle brackets; collapse internal whitespace; replace fullwidth `＠` with `@`; lowercase **domain** only; strip trailing dot.
+   * Syntax guardrails: exactly one `@`; non-empty local/domain; no spaces; no leading/trailing dots; collapse `..` in domain; (local `..` → suggest single dot only if unambiguous).
+   * Fix maps:
+
+     * **Common TLD typos:** `.con→.com`, `.cmo→.com`, `.cim→.com`, `.c0m→.com`.
+     * **Common domain typos:** `gmial.com→gmail.com`, `gamil.com→gmail.com`, `outlok.com→outlook.com`, etc.
+   * Flags: `role_account` (`info@, sales@, admin@, support@, noreply@, careers@, billing@, accounts@`), `free_mail_domain` (gmail/outlook/yahoo/icloud/proton/aol), `disposable_domain` (local list), `non_ascii_domain` (convert via `idna`).
+   * Produce a local decision: `accept / fix_auto / review / suppress` and a normalized suggestion.
