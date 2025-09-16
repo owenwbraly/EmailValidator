@@ -518,12 +518,16 @@ def validate_email_deterministic(
         notes_parts.append("Multiple medium risks; review recommended")
         conf = _confidence_for(action, risks, None)
 
-    # Build canonical key for dedupe (None if irrecoverable)
-    can_key = None if action == "suppress" else canonical_key(f"{local}@{domain_ascii}", provider_aware=True)
+    # Build final normalized email
+    final_email = f"{local}@{domain_ascii}".lower() if classify_free_mail(domain_ascii) else f"{local}@{domain_ascii}"
+    
+    # Build canonical key for dedupe using the output email (fixed if available)
+    key_email = suggested_fix if suggested_fix else final_email
+    can_key = None if action == "suppress" else canonical_key(key_email, provider_aware=True)
 
     result = DeterministicResult(
         input_email=original,
-        normalized_email=f"{local}@{domain_ascii}".lower() if classify_free_mail(domain_ascii) else f"{local}@{domain_ascii}",
+        normalized_email=final_email,
         action=action,
         confidence=round(conf, 3),
         risk_reasons=sorted(set(risks + norm_flags)),

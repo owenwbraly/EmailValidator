@@ -7,21 +7,20 @@ import pandas as pd
 from typing import Dict, Any, List, Tuple, Set
 from collections import defaultdict
 import difflib
-from .normalize import EmailNormalizer
+from .deterministic_email_engine import canonical_key
 
 
 class EmailDeduplicator:
     def __init__(self, options: Dict[str, Any]):
         self.options = options
-        self.normalizer = EmailNormalizer()
         self.provider_aware = options.get('provider_aware_dedup', True)
     
     def generate_canonical_key(self, email: str) -> str:
         """
         Generate canonical key for de-duplication
-        Uses provider-aware normalization if enabled
+        Uses new deterministic engine's canonical key generation
         """
-        return self.normalizer.get_canonical_form(email, self.provider_aware)
+        return canonical_key(email, provider_aware=self.provider_aware) or email.lower()
     
     def deduplicate_records(self, processed_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
