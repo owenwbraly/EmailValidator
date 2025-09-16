@@ -85,9 +85,15 @@ class EmailDeduplicator:
         """
         Find near-duplicate emails using edit distance
         Returns list of near-duplicate groups
+        
+        For large datasets (>1000 emails), this is disabled for performance
         """
         near_duplicates = []
         emails = [(row['processed_email'], row) for row in processed_rows if row['action'] != 'remove']
+        
+        # Skip near-duplicate analysis for large datasets to prevent hanging
+        if len(emails) > 1000:
+            return near_duplicates
         
         # Compare each pair of emails
         for i, (email1, row1) in enumerate(emails):

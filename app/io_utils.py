@@ -97,7 +97,16 @@ class FileHandler:
             file_content = uploaded_file.getvalue()
             
             if isinstance(file_content, bytes):
-                file_content = file_content.decode('utf-8')
+                # Try multiple encodings for better compatibility
+                for encoding in ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1']:
+                    try:
+                        file_content = file_content.decode(encoding)
+                        break
+                    except UnicodeDecodeError:
+                        continue
+                else:
+                    # If all encodings fail, use utf-8 with error handling
+                    file_content = file_content.decode('utf-8', errors='replace')
             
             import json
             
@@ -275,7 +284,16 @@ class FileHandler:
             file_content = uploaded_file.getvalue()
             
             if isinstance(file_content, bytes):
-                file_content = file_content.decode('utf-8')
+                # Try multiple encodings for better compatibility
+                for encoding in ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1']:
+                    try:
+                        file_content = file_content.decode(encoding)
+                        break
+                    except UnicodeDecodeError:
+                        continue
+                else:
+                    # If all encodings fail, use utf-8 with error handling
+                    file_content = file_content.decode('utf-8', errors='replace')
             
             tsv_buffer = io.StringIO(file_content)
             
@@ -296,7 +314,16 @@ class FileHandler:
             file_content = uploaded_file.getvalue()
             
             if isinstance(file_content, bytes):
-                file_content = file_content.decode('utf-8')
+                # Try multiple encodings for better compatibility
+                for encoding in ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1']:
+                    try:
+                        file_content = file_content.decode(encoding)
+                        break
+                    except UnicodeDecodeError:
+                        continue
+                else:
+                    # If all encodings fail, use utf-8 with error handling
+                    file_content = file_content.decode('utf-8', errors='replace')
             
             csv_buffer = io.StringIO(file_content)
             
