@@ -350,13 +350,32 @@ class FileHandler:
                 
                 if rows_data and len(rows_data) > 1:
                     # Convert to DataFrame - first row is headers
-                    headers = rows_data[0] if rows_data[0] else [f"Column_{i}" for i in range(len(rows_data[1]))]
+                    raw_headers = rows_data[0] if rows_data[0] else []
+                    # Clean headers: convert None/empty to valid column names
+                    headers = []
+                    for i, header in enumerate(raw_headers):
+                        if header is None or header == '' or str(header).strip() == '':
+                            headers.append(f"Column_{i}")
+                        else:
+                            headers.append(str(header).strip())
+                    
+                    # If no valid headers found, create default ones
+                    if not headers and len(rows_data) > 1:
+                        headers = [f"Column_{i}" for i in range(len(rows_data[1]))]
+                    
                     data_rows = rows_data[1:]
                     df = pd.DataFrame(data_rows, columns=headers)
                     sheets_dict[sheet_name] = df
                 elif rows_data and len(rows_data) == 1:
-                    # Only header row
-                    df = pd.DataFrame(columns=rows_data[0])
+                    # Only header row - clean headers here too
+                    raw_headers = rows_data[0] if rows_data[0] else []
+                    headers = []
+                    for i, header in enumerate(raw_headers):
+                        if header is None or header == '' or str(header).strip() == '':
+                            headers.append(f"Column_{i}")
+                        else:
+                            headers.append(str(header).strip())
+                    df = pd.DataFrame(columns=headers)
                     sheets_dict[sheet_name] = df
             
             workbook.close()
@@ -465,8 +484,14 @@ class FileHandler:
             
             sheet = workbook[sheet_name]
             
-            # Get header row
-            header_row = next(sheet.iter_rows(values_only=True))
+            # Get header row and clean it
+            raw_header_row = next(sheet.iter_rows(values_only=True))
+            header_row = []
+            for i, header in enumerate(raw_header_row):
+                if header is None or header == '' or str(header).strip() == '':
+                    header_row.append(f"Column_{i}")
+                else:
+                    header_row.append(str(header).strip())
             
             # Process in chunks
             chunk_data = []
