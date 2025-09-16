@@ -39,9 +39,18 @@ class FileHandler:
             uploaded_file.seek(0)
             file_content = uploaded_file.getvalue()
             
-            # Convert bytes to StringIO for CSV reading
+            # Convert bytes to StringIO for CSV reading with encoding detection
             if isinstance(file_content, bytes):
-                file_content = file_content.decode('utf-8')
+                # Try multiple encodings for better compatibility
+                for encoding in ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1']:
+                    try:
+                        file_content = file_content.decode(encoding)
+                        break
+                    except UnicodeDecodeError:
+                        continue
+                else:
+                    # If all encodings fail, use utf-8 with error handling
+                    file_content = file_content.decode('utf-8', errors='replace')
             
             csv_buffer = io.StringIO(file_content)
             file_size = len(file_content)
@@ -125,9 +134,18 @@ class FileHandler:
             uploaded_file.seek(0)
             file_content = uploaded_file.getvalue()
             
-            # Convert bytes to StringIO for CSV reading
+            # Convert bytes to StringIO for CSV reading with encoding detection
             if isinstance(file_content, bytes):
-                file_content = file_content.decode('utf-8')
+                # Try multiple encodings for better compatibility
+                for encoding in ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1']:
+                    try:
+                        file_content = file_content.decode(encoding)
+                        break
+                    except UnicodeDecodeError:
+                        continue
+                else:
+                    # If all encodings fail, use utf-8 with error handling
+                    file_content = file_content.decode('utf-8', errors='replace')
             
             tsv_buffer = io.StringIO(file_content)
             file_size = len(file_content)
@@ -173,7 +191,16 @@ class FileHandler:
             file_content = uploaded_file.getvalue()
             
             if isinstance(file_content, bytes):
-                file_content = file_content.decode('utf-8')
+                # Try multiple encodings for better compatibility
+                for encoding in ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1']:
+                    try:
+                        file_content = file_content.decode(encoding)
+                        break
+                    except UnicodeDecodeError:
+                        continue
+                else:
+                    # If all encodings fail, use utf-8 with error handling
+                    file_content = file_content.decode('utf-8', errors='replace')
             
             csv_buffer = io.StringIO(file_content)
             
@@ -206,9 +233,15 @@ class FileHandler:
                         break
                     rows_data.append(row)
                 
-                if rows_data:
-                    # Convert to DataFrame
-                    df = pd.DataFrame(rows_data[1:], columns=rows_data[0] if rows_data else None)
+                if rows_data and len(rows_data) > 1:
+                    # Convert to DataFrame - first row is headers
+                    headers = rows_data[0] if rows_data[0] else [f"Column_{i}" for i in range(len(rows_data[1]))]
+                    data_rows = rows_data[1:]
+                    df = pd.DataFrame(data_rows, columns=headers)
+                    sheets_dict[sheet_name] = df
+                elif rows_data and len(rows_data) == 1:
+                    # Only header row
+                    df = pd.DataFrame(columns=rows_data[0])
                     sheets_dict[sheet_name] = df
             
             workbook.close()
