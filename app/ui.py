@@ -369,13 +369,20 @@ class EmailValidatorUI:
                 value=True,
                 help="Generate rejected, changes, and duplicates reports"
             )
+            
+            array_mode = st.checkbox(
+                "🚀 Array processing mode (Recommended)",
+                value=True,
+                help="New simplified email processing approach with better duplicate handling"
+            )
         
         return {
             "enable_llm_review": enable_llm_review,
             "confidence_threshold": confidence_threshold,
             "exclude_role_accounts": exclude_role_accounts,
             "provider_aware_dedup": provider_aware_dedup,
-            "export_reports": export_reports
+            "export_reports": export_reports,
+            "array_mode": array_mode
         }
     
     def _process_file(self, uploaded_file, llm_config: Dict[str, Any], options: Dict[str, Any]):

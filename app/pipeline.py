@@ -17,6 +17,9 @@ from .llm_adapter import LLMAdapter
 from .routing import DecisionRouter
 from .dedupe import EmailDeduplicator
 from .decision_engine import DeterministicDecisionEngine
+from .email_entry import EmailArrayExtractor
+from .array_processor import ArrayEmailProcessor
+from .array_dedupe import ArrayEmailDeduplicator
 
 
 class EmailValidationPipeline:
@@ -24,12 +27,21 @@ class EmailValidationPipeline:
         self.llm_config = llm_config
         self.options = options
         self.enable_llm_review = options.get('enable_llm_review', False)
+        self.array_mode = options.get('array_mode', True)  # Default to new array mode
         
         # Initialize components
         self.file_handler = FileHandler()
         self.detector = EmailColumnDetector()
         self.decision_engine = DeterministicDecisionEngine(options)
-        self.deduplicator = EmailDeduplicator(options)
+        
+        # Array mode components
+        if self.array_mode:
+            self.array_extractor = EmailArrayExtractor(self.detector)
+            self.array_processor = ArrayEmailProcessor(self.decision_engine)
+            self.array_deduplicator = ArrayEmailDeduplicator(options)
+        else:
+            # Legacy components
+            self.deduplicator = EmailDeduplicator(options)
         
         # LLM components - only initialize if enabled
         if self.enable_llm_review:
@@ -47,8 +59,113 @@ class EmailValidationPipeline:
     
     def process_file(self, uploaded_file, progress_callback: Callable = None) -> Dict[str, Any]:
         """
-        Main processing pipeline
+        Main processing pipeline - supports both array mode and legacy mode
         Returns dict with cleaned_data, rejected_data, changes_report, duplicates_report, summary
+        """
+        if self.array_mode:
+            return self._process_file_array_mode(uploaded_file, progress_callback)
+        else:
+            return self._process_file_legacy_mode(uploaded_file, progress_callback)
+    
+    def _process_file_array_mode(self, uploaded_file, progress_callback: Callable = None) -> Dict[str, Any]:
+        """
+        New array-based processing pipeline
+        """
+        self._update_progress("Loading file...", 0.05, progress_callback)
+        
+        # Step 1: Load file
+        file_data = self.file_handler.load_file(uploaded_file)
+        
+        self._update_progress("Extracting emails as arrays...", 0.15, progress_callback)
+        
+        # Step 2: Extract all emails as arrays with position tracking
+        extraction_results = self.array_extractor.extract_all_emails(file_data)
+        
+        if extraction_results['non_empty_entries'] == 0:
+            raise ValueError("No email addresses found in the uploaded file")
+        
+        all_entries = extraction_results['email_entries']
+        
+        self._update_progress("Processing emails with deterministic engine...", 0.40, progress_callback)
+        
+        # Step 3: Process emails with deterministic engine
+        processing_results = self.array_processor.process_email_entries(all_entries)
+        
+        # Update counters
+        self.counters.update(processing_results['results'])
+        
+        self._update_progress("Running deduplication...", 0.70, progress_callback)
+        
+        # Step 4: Run deduplication on processed entries
+        dedupe_results = self.array_deduplicator.deduplicate_entries(all_entries)
+        
+        # Update duplicate counter
+        self.counters['duplicates'] = dedupe_results['total_duplicates_removed']
+        
+        self._update_progress("Creating duplicates file and cleaning data...", 0.85, progress_callback)
+        
+        # Step 5: Create duplicates DataFrame
+        duplicates_df = self.array_deduplicator.create_duplicates_dataframe(
+            file_data, dedupe_results['duplicate_positions']
+        )
+        
+        # Step 6: Update DataFrames with cleaned emails
+        cleaned_data_with_emails = self.array_processor.update_dataframes_with_cleaned_emails(
+            file_data, all_entries
+        )
+        
+        # Step 7: Blank duplicate rows in cleaned data
+        final_cleaned_data = self.array_deduplicator.blank_duplicate_rows(
+            cleaned_data_with_emails, dedupe_results['duplicate_positions']
+        )
+        
+        self._update_progress("Generating reports...", 0.95, progress_callback)
+        
+        # Step 8: Generate final results
+        results = self._generate_array_mode_results(
+            final_cleaned_data, duplicates_df, processing_results['changes_report'],
+            dedupe_results['duplicates_report'], uploaded_file.name, extraction_results
+        )
+        
+        self._update_progress("Complete!", 1.0, progress_callback)
+        
+        return results
+    
+    def _generate_array_mode_results(self, final_cleaned_data: Dict[str, pd.DataFrame], 
+                                   duplicates_df: pd.DataFrame, changes_report: List[Dict],
+                                   duplicates_report: List[Dict], filename: str, 
+                                   extraction_results: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate final result package for array mode"""
+        
+        # Determine output format based on input
+        if filename.endswith('.csv'):
+            # For CSV, return single dataframe
+            cleaned_data = list(final_cleaned_data.values())[0] if final_cleaned_data else pd.DataFrame()
+        else:
+            # For Excel, return dict of sheets
+            cleaned_data = final_cleaned_data
+        
+        # Convert lists to DataFrames
+        changes_df = pd.DataFrame(changes_report) if changes_report else pd.DataFrame()
+        
+        # Format duplicates report for readability
+        duplicates_formatted_df = self._format_duplicates_report(duplicates_report)
+        
+        return {
+            'cleaned_data': cleaned_data,
+            'rejected_data': duplicates_df,  # Duplicates are now the "rejected" data
+            'changes_report': changes_df,
+            'duplicates_report': duplicates_formatted_df,
+            'duplicates_file': duplicates_df,  # Separate duplicates file
+            'summary': self.counters.copy(),
+            'options': self.options,
+            'arrays_by_sheet': extraction_results['arrays_by_sheet'],  # For UI display
+            'email_columns_by_sheet': extraction_results['email_columns_by_sheet']
+        }
+    
+    def _process_file_legacy_mode(self, uploaded_file, progress_callback: Callable = None) -> Dict[str, Any]:
+        """
+        Legacy DataFrame-based processing pipeline (preserved for compatibility)
         """
         self._update_progress("Loading file...", 0.05, progress_callback)
         
@@ -99,9 +216,6 @@ class EmailValidationPipeline:
         
         # Step 7: De-duplication across all processed data
         dedupe_results = self.deduplicator.deduplicate_records(all_results)
-        
-        # Initialize duplicate counter (will be updated in _apply_deduplication)
-        self.counters['duplicates'] = 0
         
         # Step 8: Apply de-duplication results back to sheets
         final_sheets = self._apply_deduplication(processed_sheets, dedupe_results, email_columns)
