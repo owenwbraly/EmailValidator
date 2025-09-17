@@ -10,6 +10,21 @@ The system follows an "LLM-first" approach where every email address undergoes m
 
 Preferred communication style: Simple, everyday language.
 
+## Recent Changes
+
+- **[September 17, 2025]** Completed comprehensive array-based processing refactor as requested by user
+  - Implemented simplified array-first data flow with EmailEntry model for position tracking
+  - Added ArrayEmailExtractor for multi-column email extraction with sheet/row/column metadata
+  - Built ArrayEmailProcessor for deterministic cleaning on email arrays
+  - Created ArrayEmailDeduplicator with position-aware duplicate detection
+  - Implemented row blanking for duplicates (preserves row spacing) with separate duplicates file export
+  - Integrated new array mode into UI with default-enabled checkbox
+  - Successfully tested end-to-end: Accepted=4, Duplicates=1, proper file generation
+- Enhanced email column detection with better pattern matching, content validation, and false positive prevention
+- Added comprehensive file preview with email column detection across all sheets
+- Implemented memory-optimized processing for large files with chunked reading
+- Fixed critical duplicate removal bug where all duplicates were being deleted instead of keeping one copy
+
 ## System Architecture
 
 ### Frontend Architecture
