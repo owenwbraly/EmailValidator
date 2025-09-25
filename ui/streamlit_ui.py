@@ -24,8 +24,8 @@ class EmailValidatorUI:
     def run(self):
         """Main UI rendering method"""
         # Header
-        st.title("📧 Email Validator • Cleaner • Deduper")
-        st.markdown("**Fast deterministic email validation and cleaning for large spreadsheets.**")
+        st.title("👥 People Validator")
+        st.markdown("**Clean and validate people data from CSV files with complete contact information.**")
         
         # Add clear session button if results exist
         if st.session_state.processing_results:
@@ -46,12 +46,12 @@ class EmailValidatorUI:
         
         # Process button and progress
         if uploaded_file is not None:
-            if st.button("🚀 Process Email Data", type="primary", use_container_width=True):
+            if st.button("🚀 Extract People Data", type="primary", width='stretch'):
                 self._process_file(uploaded_file, options)
         
         # Results and download section
         if st.session_state.processing_results:
-            self._render_results_section()
+            self._render_people_results_section()
     
     def _render_upload_section(self):
         """Render file upload section"""
@@ -60,7 +60,7 @@ class EmailValidatorUI:
         uploaded_file = st.file_uploader(
             "Choose a data file",
             type=['csv', 'xlsx', 'xls', 'json', 'tsv'],
-            help="Supports CSV, Excel, JSON, and TSV files. The tool will automatically detect email columns."
+            help="Supports CSV, Excel, JSON, and TSV files. The tool will automatically detect person data columns."
         )
         
         if uploaded_file:
@@ -89,29 +89,50 @@ class EmailValidatorUI:
             file_size = len(uploaded_file.getvalue()) / (1024 * 1024)  # MB
             if file_size > 10:
                 st.info(f"ℹ️ Large file detected ({file_size:.1f} MB). Showing preview of first {file_handler.preview_rows} rows per sheet.")
-            detector = EmailColumnDetector()
+            # Detect person columns across all sheets using semantic detection
+            from utils.semantic_col_detector import SemanticColumnDetector
+            semantic_detector = SemanticColumnDetector()
             
-            # Detect email columns across all sheets
-            email_columns_found = {}
+            person_columns_found = {}
             for sheet_name, df in file_data.items():
-                email_col = detector.detect_email_column(df)
-                if email_col:
-                    email_columns_found[sheet_name] = email_col
+                person_cols = semantic_detector.detect_person_columns(df)
+                if any(person_cols.values()):
+                    person_columns_found[sheet_name] = person_cols
             
             # Display summary
-            if email_columns_found:
-                st.success(f"📧 **Email columns detected:** {len(email_columns_found)} sheet(s) with email data")
+            if person_columns_found:
+                st.success(f"👥 **Person data detected:** {len(person_columns_found)} sheet(s) with person information")
                 
-                for sheet_name, email_col in email_columns_found.items():
-                    st.write(f"**{sheet_name}**: Email column '**{email_col}**' found")
+                for sheet_name, person_cols in person_columns_found.items():
+                    st.write(f"**{sheet_name}**: Person columns detected")
                     
-                    # Show sample emails from this sheet
+                    # Show detected columns
+                    detected_fields = []
+                    for field_type, col_name in person_cols.items():
+                        if col_name:
+                            confidence = semantic_detector.get_detection_confidence(
+                                file_data[sheet_name], field_type, col_name
+                            )
+                            detected_fields.append(f"**{field_type}**: {col_name} ({confidence:.0%})")
+                    
+                    if detected_fields:
+                        st.write("  " + " | ".join(detected_fields))
+                    
+                    # Show sample data
                     df = file_data[sheet_name]
-                    sample_emails = df[email_col].dropna().head(3).tolist()
-                    if sample_emails:
-                        st.write(f"  Sample emails: {', '.join(str(e) for e in sample_emails)}")
+                    if person_cols.get('first_name') and person_cols.get('last_name'):
+                        first_col = person_cols['first_name']
+                        last_col = person_cols['last_name']
+                        sample_names = []
+                        for i in range(min(3, len(df))):
+                            first = str(df.iloc[i][first_col]) if first_col in df.columns else ""
+                            last = str(df.iloc[i][last_col]) if last_col in df.columns else ""
+                            if first and last and first != 'nan' and last != 'nan':
+                                sample_names.append(f"{first} {last}")
+                        if sample_names:
+                            st.write(f"  Sample names: {', '.join(sample_names)}")
             else:
-                st.warning("⚠️ **No email columns detected** - Please check your file has email data with proper headers")
+                st.warning("⚠️ **No person data detected** - Please check your file has person information with recognizable column names")
             
             # Show sheet/file structure
             st.write("**📋 File Structure:**")
@@ -122,7 +143,7 @@ class EmailValidatorUI:
                 col1, col2, col3 = st.columns(3)
                 col1.metric("Rows", f"{actual_rows:,}")
                 col2.metric("Columns", len(df.columns))
-                col3.metric("Email Column", "✅" if 'main' in email_columns_found else "❌")
+                col3.metric("Person Data", "✅" if 'main' in person_columns_found else "❌")
                 
                 # Show preview notice if preview is limited
                 if len(df) < actual_rows:
@@ -140,12 +161,12 @@ class EmailValidatorUI:
                 # Multi-sheet file (Excel/JSON with multiple sections)
                 actual_total_rows = sum(actual_row_counts.values())
                 preview_total_rows = sum(len(df) for df in file_data.values())
-                sheets_with_emails = len(email_columns_found)
+                sheets_with_people = len(person_columns_found)
                 
                 col1, col2, col3 = st.columns(3)
                 col1.metric("Total Sheets", len(file_data))
                 col2.metric("Total Rows", f"{actual_total_rows:,}")
-                col3.metric("Sheets with Emails", sheets_with_emails)
+                col3.metric("Sheets with People", sheets_with_people)
                 
                 # Show preview notice if data is limited
                 if preview_total_rows < actual_total_rows:
@@ -153,26 +174,30 @@ class EmailValidatorUI:
                 
                 # Show each sheet
                 for sheet_name, df in file_data.items():
-                    has_email = sheet_name in email_columns_found
-                    email_icon = "📧" if has_email else "📄"
+                    has_people = sheet_name in person_columns_found
+                    people_icon = "👥" if has_people else "📄"
                     actual_sheet_rows = actual_row_counts.get(sheet_name, len(df))
                     
                     # Sheet title with actual row count
-                    sheet_title = f"{email_icon} **{sheet_name}** ({actual_sheet_rows:,} rows, {len(df.columns)} columns)"
+                    sheet_title = f"{people_icon} **{sheet_name}** ({actual_sheet_rows:,} rows, {len(df.columns)} columns)"
                     if len(df) < actual_sheet_rows:
                         sheet_title += f" (showing first {len(df):,})"
                     
                     with st.expander(sheet_title):
-                        if has_email:
-                            st.success(f"Email column: **{email_columns_found[sheet_name]}**")
+                        if has_people:
+                            person_cols = person_columns_found[sheet_name]
+                            detected_count = sum(1 for col in person_cols.values() if col)
+                            st.success(f"Person data detected: {detected_count} fields")
                             
-                            # Show sample emails
-                            email_col = email_columns_found[sheet_name]
-                            sample_emails = df[email_col].dropna().head(3).tolist()
-                            if sample_emails:
-                                st.write("Sample emails:", ", ".join(str(e) for e in sample_emails))
+                            # Show detected fields
+                            detected_fields = []
+                            for field_type, col_name in person_cols.items():
+                                if col_name:
+                                    detected_fields.append(f"{field_type}: {col_name}")
+                            if detected_fields:
+                                st.write("Detected fields:", " | ".join(detected_fields))
                         else:
-                            st.info("No email column detected - this sheet will pass through unchanged")
+                            st.info("No person data detected - this sheet will be skipped")
                         
                         st.write("**Columns:**", ", ".join(df.columns))
                         st.dataframe(df.head())
@@ -213,7 +238,7 @@ class EmailValidatorUI:
                         color_discrete_sequence=filtered_data['Color']
                     )
                     fig.update_traces(textposition='inside', textinfo='percent+label')
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width='stretch')
             except ImportError:
                 # Fallback to simple metrics if plotly not available
                 st.write("**Processing Results:**")
@@ -437,3 +462,246 @@ class EmailValidatorUI:
                             st.caption(f"🔄 Found {total_duplicates} duplicate emails across {len(duplicates_report['canonical_key'].unique())} groups")
                     else:
                         st.info("🔄 No duplicate emails found")
+    
+    def _render_people_results_section(self):
+        """Render people extraction results with 3-sheet output"""
+        # Use results from session state to persist across reruns
+        results = st.session_state.processing_results
+        if not results:
+            return
+        
+        st.subheader("👥 People Processing Results")
+        
+        # Summary metrics  
+        summary = results.get('summary', {})
+        people_count = summary.get('people_extracted', 0)
+        accepted_count = summary.get('people_accepted', 0)
+        rejected_count = summary.get('people_rejected', 0)
+        sheets_count = summary.get('sheets_processed', 0)
+        email_stats = summary.get('email_processing', {})
+        
+        col1, col2, col3, col4 = st.columns(4)
+        
+        col1.metric("👥 Total People", people_count)
+        col2.metric("✅ Accepted", accepted_count)
+        col3.metric("❌ Rejected", rejected_count)
+        col4.metric("📊 Sheets", sheets_count)
+        
+        # Email processing statistics
+        if email_stats:
+            st.subheader("📧 Email Processing Results")
+            col1, col2, col3, col4 = st.columns(4)
+            
+            col1.metric("✅ Accepted", email_stats.get('accepted', 0))
+            col2.metric("🔧 Fixed", email_stats.get('fixed', 0))
+            col3.metric("❌ Removed", email_stats.get('removed', 0))
+            col4.metric("🔄 Duplicates", email_stats.get('duplicates', 0))
+        
+        # Advanced Analytics Section
+        if people_count > 0:
+            st.subheader("📊 Advanced Analytics")
+            
+            # Get data for analytics
+            all_people_df = results.get('all_people_data', pd.DataFrame())
+            accepted_people_df = results.get('accepted_people_data', pd.DataFrame())
+            rejected_people_df = results.get('rejected_people_data', pd.DataFrame())
+            
+            # Create two columns for charts
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                # People Data Completeness Chart
+                if not all_people_df.empty:
+                    st.write("**👥 People Data Completeness**")
+                    
+                    # Calculate completeness metrics
+                    total_people = len(all_people_df)
+                    has_first_name = len(all_people_df[all_people_df['First'].str.strip() != ''])
+                    has_last_name = len(all_people_df[all_people_df['Last'].str.strip() != ''])
+                    has_email = len(all_people_df[all_people_df['Email'].str.strip() != ''])
+                    has_linkedin = len(all_people_df[all_people_df['LinkedIn'].str.strip() != ''])
+                    has_title = len(all_people_df[all_people_df['Title'].str.strip() != ''])
+                    has_company = len(all_people_df[all_people_df['Company'].str.strip() != ''])
+                    
+                    # Create completeness data
+                    completeness_data = {
+                        'Field': ['First Name', 'Last Name', 'Email', 'LinkedIn', 'Title', 'Company'],
+                        'Count': [has_first_name, has_last_name, has_email, has_linkedin, has_title, has_company],
+                        'Missing': [total_people - has_first_name, total_people - has_last_name, 
+                                  total_people - has_email, total_people - has_linkedin, 
+                                  total_people - has_title, total_people - has_company]
+                    }
+                    
+                    # Create pie chart for completeness
+                    try:
+                        import plotly.express as px
+                        import plotly.graph_objects as go
+                        
+                        # Create a stacked bar chart instead of pie for better readability
+                        fig = go.Figure()
+                        
+                        fig.add_trace(go.Bar(
+                            name='Has Data',
+                            x=completeness_data['Field'],
+                            y=completeness_data['Count'],
+                            marker_color='#28a745'
+                        ))
+                        
+                        fig.add_trace(go.Bar(
+                            name='Missing',
+                            x=completeness_data['Field'],
+                            y=completeness_data['Missing'],
+                            marker_color='#dc3545'
+                        ))
+                        
+                        fig.update_layout(
+                            barmode='stack',
+                            title="Data Completeness by Field",
+                            xaxis_title="Field",
+                            yaxis_title="Number of People",
+                            height=400
+                        )
+                        
+                        st.plotly_chart(fig, width='stretch')
+                        
+                        # Show percentages
+                        st.write("**Completeness Percentages:**")
+                        for i, field in enumerate(completeness_data['Field']):
+                            percentage = (completeness_data['Count'][i] / total_people) * 100
+                            st.write(f"• {field}: {percentage:.1f}% ({completeness_data['Count'][i]}/{total_people})")
+                            
+                    except ImportError:
+                        # Fallback to simple metrics
+                        st.write("**Data Completeness:**")
+                        for i, field in enumerate(completeness_data['Field']):
+                            percentage = (completeness_data['Count'][i] / total_people) * 100
+                            st.write(f"• {field}: {percentage:.1f}% ({completeness_data['Count'][i]}/{total_people})")
+            
+            with col2:
+                # Email Processing Results Chart
+                if email_stats and any(email_stats.values()):
+                    st.write("**📧 Email Processing Results**")
+                    
+                    # Prepare email processing data for pie chart
+                    email_data = {
+                        'Status': ['Accepted', 'Fixed', 'Removed', 'Duplicates'],
+                        'Count': [
+                            email_stats.get('accepted', 0),
+                            email_stats.get('fixed', 0),
+                            email_stats.get('removed', 0),
+                            email_stats.get('duplicates', 0)
+                        ],
+                        'Color': ['#28a745', '#ffc107', '#dc3545', '#17a2b8']
+                    }
+                    
+                    # Filter out zero counts
+                    filtered_data = {k: [v for i, v in enumerate(vs) if email_data['Count'][i] > 0] for k, vs in email_data.items()}
+                    
+                    if filtered_data['Count']:
+                        try:
+                            import plotly.express as px
+                            
+                            fig = px.pie(
+                                values=filtered_data['Count'],
+                                names=filtered_data['Status'],
+                                title="Email Processing Results",
+                                color_discrete_sequence=filtered_data['Color']
+                            )
+                            fig.update_traces(textposition='inside', textinfo='percent+label')
+                            fig.update_layout(height=400)
+                            
+                            st.plotly_chart(fig, width='stretch')
+                            
+                        except ImportError:
+                            # Fallback to simple metrics
+                            st.write("**Email Processing Results:**")
+                            for i, status in enumerate(email_data['Status']):
+                                count = email_data['Count'][i]
+                                if count > 0:
+                                    st.write(f"• {status}: {count}")
+                    else:
+                        st.info("No email processing data available")
+                else:
+                    st.info("No email processing data available")
+        
+        # Show sample data from each sheet
+        if people_count > 0:
+            st.subheader("📋 Data Preview")
+            
+            # Tabs for different sheets
+            tab1, tab2, tab3 = st.tabs(["All People", "Cleaned People", "Rejected People"])
+            
+            with tab1:
+                all_people_df = results.get('all_people_data', pd.DataFrame())
+                if not all_people_df.empty:
+                    st.write(f"**All People ({len(all_people_df)} total)**")
+                    st.dataframe(all_people_df.head(10), width='stretch')
+                else:
+                    st.info("No people data available")
+            
+            with tab2:
+                accepted_people_df = results.get('accepted_people_data', pd.DataFrame())
+                if not accepted_people_df.empty:
+                    st.write(f"**Cleaned & Deduplicated People ({len(accepted_people_df)} total)**")
+                    st.dataframe(accepted_people_df.head(10), width='stretch')
+                else:
+                    st.info("No accepted people data available")
+            
+            with tab3:
+                rejected_people_df = results.get('rejected_people_data', pd.DataFrame())
+                if not rejected_people_df.empty:
+                    st.write(f"**Rejected People ({len(rejected_people_df)} total)**")
+                    st.caption("People rejected due to invalid emails, duplicates, or missing email addresses. Sorted by source sheet and row number.")
+                    st.dataframe(rejected_people_df.head(10), width='stretch')
+                    
+                    # Show rejection reasons breakdown
+                    if 'Rejection Reason' in rejected_people_df.columns:
+                        st.write("**Rejection Reasons:**")
+                        rejection_counts = rejected_people_df['Rejection Reason'].value_counts()
+                        for reason, count in rejection_counts.head(5).items():
+                            if reason:  # Skip empty reasons
+                                st.write(f"• {reason}: {count}")
+                else:
+                    st.info("No rejected people data available")
+        
+        # Download section
+        st.subheader("📥 Download Results")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # 3-Sheet Excel Download
+            if all([results.get('all_people_data') is not None, 
+                   results.get('accepted_people_data') is not None,
+                   results.get('rejected_people_data') is not None]):
+                try:
+                    from core.pipeline import EmailValidationPipeline
+                    pipeline = EmailValidationPipeline({})
+                    
+                    excel_data = pipeline.create_3_sheet_excel(
+                        results['all_people_data'],
+                        results['accepted_people_data'], 
+                        results['rejected_people_data']
+                    )
+                    
+                    st.download_button(
+                        "📊 Download 3-Sheet Excel",
+                        data=excel_data,
+                        file_name=f"people_analysis_{int(time.time())}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+                except Exception as e:
+                    st.error(f"Error creating Excel file: {str(e)}")
+            else:
+                st.warning("Excel download not available")
+        
+        with col2:
+            # Individual CSV downloads
+            if results.get('all_people_data') is not None and not results['all_people_data'].empty:
+                all_csv = results['all_people_data'].to_csv(index=False)
+                st.download_button(
+                    "📄 All People CSV",
+                    data=all_csv,
+                    file_name=f"all_people_{int(time.time())}.csv",
+                    mime="text/csv"
+                )

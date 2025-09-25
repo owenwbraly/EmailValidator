@@ -106,7 +106,7 @@ class EmailEntry:
 ```
 
 ### Stage 4: Email Processing & Validation
-**Files:** `core/processor.py` + `core/email_hygeine_engine.py`
+**Files:** `core/email_processing/email_validator.py` + `core/email_processing/email_hygeine_engine.py`
 
 **Process:**
 - **Deterministic validation** (no network calls)
@@ -217,9 +217,11 @@ EmailValidator/
 ├── core/                           # Core processing logic
 │   ├── __init__.py
 │   ├── pipeline.py                 # Main orchestration
-│   ├── processor.py                # Email processing
-│   ├── email_deduper.py           # Deduplication logic
-│   └── email_hygeine_engine.py    # Validation engine
+│   └── email_processing/           # Email processing module
+│       ├── __init__.py
+│       ├── email_validator.py      # Email processing
+│       ├── email_deduper.py       # Deduplication logic
+│       └── email_hygeine_engine.py # Validation engine
 ├── ui/                            # User interface
 │   ├── __init__.py
 │   └── streamlit_ui.py            # Streamlit web interface
@@ -235,9 +237,9 @@ EmailValidator/
 | Component | Purpose | Key Classes/Functions |
 |-----------|---------|----------------------|
 | **FileHandler** | File I/O operations | `load_file()`, `get_file_preview()` |
-| **EmailColumnDetector** | Email column detection | `detect_email_column()`, `get_all_email_columns()` |
+| **SemanticColumnDetector** | Column detection (email & person) | `detect_email_column()`, `detect_person_columns()`, `get_all_email_columns()` |
 | **EmailArrayExtractor** | Data extraction | `extract_all_emails()` |
-| **EmailProcessor** | Email validation/cleaning | `process_email_entries()` |
+| **PersonEmailProcessor** | Email validation/cleaning | `process_people_emails()` |
 | **EmailDeduplicator** | Duplicate removal | `deduplicate_entries()` |
 | **EmailValidationPipeline** | Orchestration | `process_file()` |
 | **EmailValidatorUI** | Web interface | `run()`, `_process_file()` |

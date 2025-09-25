@@ -10,11 +10,11 @@ import time
 from io import BytesIO
 
 from utils.io_handler import FileHandler
-from utils.email_col_detector import EmailColumnDetector
+from utils.semantic_col_detector import SemanticColumnDetector
 from utils.output_processor import OutputProcessor
 from models.EmailEntry import EmailEntry, EmailArrayExtractor
-from .processor import EmailProcessor
-from .email_deduper import EmailDeduplicator
+from models.Person import Person, PersonExtractor
+from .email_processing.person_email_processor import PersonEmailProcessor
 
 
 class EmailValidationPipeline:
@@ -23,10 +23,10 @@ class EmailValidationPipeline:
         
         # Initialize components
         self.file_handler = FileHandler()
-        self.detector = EmailColumnDetector()
+        self.detector = SemanticColumnDetector()
         self.array_extractor = EmailArrayExtractor(self.detector)
-        self.array_processor = EmailProcessor(options)
-        self.array_deduplicator = EmailDeduplicator(options)
+        self.person_extractor = PersonExtractor()
+        self.person_email_processor = PersonEmailProcessor(options)
         self.output_processor = OutputProcessor()
         
         # Progress tracking
@@ -35,74 +35,132 @@ class EmailValidationPipeline:
             'fixed': 0,
             'removed': 0,
             'duplicates': 0,
-            'total_processed': 0
+            'total_processed': 0,
+            'people_extracted': 0
         }
     
     def process_file(self, uploaded_file, progress_callback: Callable = None) -> Dict[str, Any]:
         """
-        Main processing pipeline using array mode
-        Returns dict with cleaned_data, rejected_data, changes_report, duplicates_report, summary
+        Main processing pipeline - now focused on person extraction
+        Returns dict with people_data, summary
         """
-        self._update_progress("Loading file...", 0.05, progress_callback)
+        self._update_progress("Loading file...", 0.1, progress_callback)
         
         # Step 1: Load file
         file_data = self.file_handler.load_file(uploaded_file)
         
-        self._update_progress("Extracting emails as arrays...", 0.15, progress_callback)
+        self._update_progress("Extracting people from all sheets...", 0.5, progress_callback)
         
-        # Step 2: Extract all emails as arrays with position tracking
-        extraction_results = self.array_extractor.extract_all_emails(file_data)
+        # Step 2: Extract all people from all sheets
+        all_people = self.person_extractor.extract_all_people(file_data)
         
-        if extraction_results['non_empty_entries'] == 0:
-            raise ValueError("No email addresses found in the uploaded file")
+        if not all_people:
+            raise ValueError("No people found in the uploaded file")
         
-        all_entries = extraction_results['email_entries']
+        # Update counter
+        self.counters['people_extracted'] = len(all_people)
         
-        self._update_progress("Processing emails with deterministic engine...", 0.40, progress_callback)
+        self._update_progress("Processing emails and validating...", 0.6, progress_callback)
         
-        # Step 3: Process emails with deterministic engine
-        processing_results = self.array_processor.process_email_entries(all_entries)
+        # Step 3: Process emails and categorize people
+        accepted_people, rejected_people, email_summary = self.person_email_processor.process_people_emails(all_people)
         
-        # Update counters
-        self.counters.update(processing_results['results'])
+        self._update_progress("Generating 3-sheet CSV...", 0.9, progress_callback)
         
-        self._update_progress("Running deduplication...", 0.70, progress_callback)
-        
-        # Step 4: Run deduplication on processed entries
-        dedupe_results = self.array_deduplicator.deduplicate_entries(all_entries)
-        
-        # Update duplicate counter
-        self.counters['duplicates'] = dedupe_results['total_duplicates_removed']
-        
-        self._update_progress("Creating duplicates file and cleaning data...", 0.85, progress_callback)
-        
-        # Step 5: Create duplicates DataFrame
-        duplicates_df = self.array_deduplicator.create_duplicates_dataframe(
-            file_data, dedupe_results['duplicate_positions']
-        )
-        
-        # Step 6: Update DataFrames with cleaned emails
-        cleaned_data_with_emails = self.array_processor.update_dataframes_with_cleaned_emails(
-            file_data, all_entries
-        )
-        
-        # Step 7: Blank duplicate rows in cleaned data
-        final_cleaned_data = self.array_deduplicator.blank_duplicate_rows(
-            cleaned_data_with_emails, dedupe_results['duplicate_positions']
-        )
-        
-        self._update_progress("Generating reports...", 0.95, progress_callback)
-        
-        # Step 8: Generate final results
-        results = self._generate_results(
-            final_cleaned_data, duplicates_df, processing_results['changes_report'],
-            processing_results.get('rejected_report', []), dedupe_results['duplicates_report'], 
-            uploaded_file.name, extraction_results
-        )
+        # Step 4: Generate 3-sheet CSV
+        all_people_df = self._create_people_dataframe(all_people)
+        accepted_people_df = self._create_people_dataframe(accepted_people)
+        rejected_people_df = self._create_rejected_people_dataframe(rejected_people)
         
         self._update_progress("Complete!", 1.0, progress_callback)
         
-        return results
+        return {
+            'all_people_data': all_people_df,
+            'accepted_people_data': accepted_people_df,
+            'rejected_people_data': rejected_people_df,
+            'all_people_list': all_people,
+            'accepted_people_list': accepted_people,
+            'rejected_people_list': rejected_people,
+            'summary': {
+                'people_extracted': len(all_people),
+                'people_accepted': len(accepted_people),
+                'people_rejected': len(rejected_people),
+                'sheets_processed': len(file_data),
+                'email_processing': email_summary
+            },
+            'options': self.options
+        }
+    
+    def _create_people_dataframe(self, people: List[Person]) -> pd.DataFrame:
+        """Create DataFrame from list of Person objects"""
+        if not people:
+            return pd.DataFrame()
+        
+        # Convert people to dictionaries
+        people_data = [person.to_dict() for person in people]
+        
+        # Create DataFrame
+        df = pd.DataFrame(people_data)
+        
+        # Reorder columns for better readability
+        column_order = [
+            'First', 'Last', 'Title', 'Company', 'Company Domain', 
+            'Email', 'LinkedIn', '', 'Source Sheet', 'Source Row', 'Person Group'
+        ]
+        
+        # Only include columns that exist
+        available_columns = [col for col in column_order if col in df.columns]
+        df = df[available_columns]
+        
+        return df
+    
+    def _create_rejected_people_dataframe(self, people: List[Person]) -> pd.DataFrame:
+        """Create DataFrame from list of rejected Person objects with validation info"""
+        if not people:
+            return pd.DataFrame()
+        
+        # Sort rejected people by source sheet and row number for better organization
+        sorted_people = sorted(people, key=lambda p: (p.source_sheet, p.source_row, p.source_column_group))
+        
+        # Convert people to dictionaries with validation info
+        people_data = [person.to_dict_with_validation() for person in sorted_people]
+        
+        # Create DataFrame
+        df = pd.DataFrame(people_data)
+        
+        # Reorder columns for better readability
+        column_order = [
+            'First', 'Last', 'Title', 'Company', 'Company Domain', 
+            'Email', 'LinkedIn', '', 'Source Sheet', 'Source Row', 'Person Group',
+            'Email Action', 'Rejection Reason', 'Email Confidence'
+        ]
+        
+        # Only include columns that exist
+        available_columns = [col for col in column_order if col in df.columns]
+        df = df[available_columns]
+        
+        return df
+    
+    def create_3_sheet_excel(self, all_people_df: pd.DataFrame, 
+                            accepted_people_df: pd.DataFrame, 
+                            rejected_people_df: pd.DataFrame) -> bytes:
+        """Create a 3-sheet Excel file with all people, accepted people, and rejected people"""
+        from io import BytesIO
+        
+        output = BytesIO()
+        
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            # Sheet 1: All People
+            all_people_df.to_excel(writer, sheet_name='All People', index=False)
+            
+            # Sheet 2: Accepted People (Cleaned & Deduplicated)
+            accepted_people_df.to_excel(writer, sheet_name='Cleaned People', index=False)
+            
+            # Sheet 3: Rejected People
+            rejected_people_df.to_excel(writer, sheet_name='Rejected People', index=False)
+        
+        output.seek(0)
+        return output.getvalue()
     
     def _generate_results(self, final_cleaned_data: Dict[str, pd.DataFrame], 
                          duplicates_df: pd.DataFrame, changes_report: List[Dict],

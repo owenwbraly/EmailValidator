@@ -132,7 +132,7 @@ class EmailDeduplicator:
                 if (sheet_name, row_number) in duplicate_positions:
                     # Blank all columns in this row
                     for col in cleaned_df.columns:
-                        cleaned_df.iloc[row_idx, cleaned_df.columns.get_loc(col)] = ""
+                        cleaned_df.iloc[row_idx, cleaned_df.columns.get_loc(col)] = pd.NA
             
             cleaned_data[sheet_name] = cleaned_df
         
