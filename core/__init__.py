@@ -1,0 +1,3 @@
+"""
+Core email processing functionality
+"""
